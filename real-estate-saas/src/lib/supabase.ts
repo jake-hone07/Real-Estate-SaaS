@@ -12,7 +12,11 @@ export const addListing = async (listing: {
   bedrooms: number
   bathrooms: number
   sqft: number
+  features: string
+  tone: string
+  translate: boolean
 }) => {
+
   const { data, error } = await supabase.from('listings').insert([listing])
   if (error) throw new Error(error.message)
   return data

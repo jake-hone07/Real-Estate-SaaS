@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { addListing } from '@/lib/supabase'
 
 export default function Home() {
-  const [form, setForm] = useState({
+ const [form, setForm] = useState({
   address: "",
   bedrooms: "",
   bathrooms: "",
@@ -12,7 +12,9 @@ export default function Home() {
   price: "",
   features: "",
   tone: "",
+  translate: false,
 });
+
 
   const [generatedListing, setGeneratedListing] = useState('')
   const [loading, setLoading] = useState(false)
@@ -21,10 +23,15 @@ export default function Home() {
   const handleChange = (
   e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
 ) => {
-  const { name, value } = e.target;
-  setForm((prev) => ({ ...prev, [name]: value }));
-};
+  const { name, type, value } = e.target;
+  const isCheckbox = type === "checkbox";
+  const inputValue = isCheckbox && "checked" in e.target ? e.target.checked : value;
 
+  setForm((prev) => ({
+    ...prev,
+    [name]: inputValue,
+  }));
+};
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -46,14 +53,18 @@ export default function Home() {
       setGeneratedListing(data.result)
 
       await addListing({
-  title: 'Generated Listing',
+  title: form.address,
   description: data.result,
-  address: '123 Main St',
-  price: 500000,
-  bedrooms: 3,
-  bathrooms: 2,
-  sqft: 1800,
+  address: form.address,
+  price: Number(form.price),
+  bedrooms: Number(form.bedrooms),
+  bathrooms: Number(form.bathrooms),
+  sqft: Number(form.sqft),
+  features: form.features,
+  tone: form.tone,
+  translate: form.translate,
 })
+
 
     } catch (err: any) {
       setError(err.message)
@@ -126,6 +137,16 @@ export default function Home() {
     <option value="Luxury">Luxury</option>
     <option value="Playful">Playful</option>
   </select>
+  <div className="flex items-center gap-2">
+  <input
+    type="checkbox"
+    name="translate"
+    checked={form.translate}
+    onChange={handleChange}
+  />
+  <label htmlFor="translate">Include Spanish translation</label>
+</div>
+
   <button
     type="submit"
     disabled={loading}
