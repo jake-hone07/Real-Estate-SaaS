@@ -4,3 +4,16 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 export const supabase = createClient(url, anon);
+export const addListing = async (listing: {
+  title: string
+  description: string
+  address: string
+  price: number
+  bedrooms: number
+  bathrooms: number
+  sqft: number
+}) => {
+  const { data, error } = await supabase.from('listings').insert([listing])
+  if (error) throw new Error(error.message)
+  return data
+}
