@@ -1,54 +1,49 @@
-// src/app/api/generate/route.ts
-import { NextResponse } from 'next/server';
+// app/api/generate/route.ts
+import { OpenAI } from "openai";
+import { NextResponse } from "next/server";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 export async function POST(req: Request) {
   try {
-    const { address, bedrooms, bathrooms, squareFeet, features, tone, translate } = await req.json();
+    const body = await req.json();
+    const { address, beds, baths, squareFeet, features, tone, translate } = body;
 
-    const prompt = `
-Write a compelling real estate listing for the following property:
-
-Address: ${address}
-Bedrooms: ${bedrooms}
-Bathrooms: ${bathrooms}
-Square Feet: ${squareFeet}
-Features: ${features}
-Tone: ${tone}
-${translate ? 'Include a Spanish translation at the end.' : ''}
+    // Build the prompt based on input
+    let prompt = `Write a real estate listing for the following home:
 `;
-
-    const apiKey = process.env.OPENAI_API_KEY;
-
-    if (!apiKey) {
-      return NextResponse.json({ error: 'Missing OpenAI API Key' }, { status: 500 });
+    prompt += `Address: ${address}
+`;
+    prompt += `Beds: ${beds}, Baths: ${baths}, SqFt: ${squareFeet}
+`;
+    prompt += `Features: ${features}
+`;
+    prompt += `Tone: ${tone}
+`;
+    if (translate) {
+      prompt += ` Also provide a Spanish translation.`;
     }
 
-    const response = await fetch('https://api.openai.com/v1/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'text-davinci-003',
-        prompt,
-        max_tokens: 300,
-        temperature: 0.7,
-      }),
+    const response = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [{ role: "user", content: prompt }],
     });
 
-    const data = await response.json();
+    const listing = response.choices[0]?.message?.content;
+    console.log("Generated listing:", listing);
 
-    console.log("GPT API raw response:", data);
-
-    if (data.choices && data.choices.length > 0) {
-      return NextResponse.json({ listing: data.choices[0].text });
-    } else {
-      return NextResponse.json({ listing: null });
-    }
-
-  } catch (error) {
-    console.error("Error in /api/generate:", error);
-    return NextResponse.json({ error: 'Something went wrong.' }, { status: 500 });
+    return NextResponse.json({ listing });
+ } catch (error: unknown) {
+  if (error instanceof Error) {
+    console.error("Error generating listing:", error.message);
+    return NextResponse.json({ listing: null, error: error.message }, { status: 500 });
+  } else {
+    console.error("Unknown error generating listing:", error);
+    return NextResponse.json({ listing: null, error: "Unknown error" }, { status: 500 });
   }
 }
+
+}
+
