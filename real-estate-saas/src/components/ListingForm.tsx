@@ -43,7 +43,14 @@ export default function ListingForm({ onGenerate }: Props) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form
+  onSubmit={(e) => {
+    e.preventDefault();
+    onGenerate(formData);
+  }}
+  className="space-y-4"
+>
+
       <input
         className="w-full p-2 border rounded"
         name="address"
@@ -105,5 +112,6 @@ export default function ListingForm({ onGenerate }: Props) {
         Generate Listing
       </button>
     </form>
+    
   );
 }

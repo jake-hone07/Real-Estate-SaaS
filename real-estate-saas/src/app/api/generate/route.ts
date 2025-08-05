@@ -1,12 +1,12 @@
 // src/app/api/generate/route.ts
-import { OpenAI } from "openai";
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from 'next/server';
+import OpenAI from 'openai';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
     const { address, bedrooms, bathrooms, squareFeet, features, tone, translate } = await req.json();
 
@@ -15,42 +15,39 @@ Address: ${address}
 Bedrooms: ${bedrooms}
 Bathrooms: ${bathrooms}
 Square Feet: ${squareFeet}
-Key Features: ${features}`;
+Features: ${features}`;
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-4",
-      messages: [
-        {
-          role: "user" as const,
-          content: basePrompt,
-        },
-      ],
+      model: 'gpt-4',
+      messages: [{ role: 'user', content: basePrompt }],
       temperature: 0.7,
     });
 
-    const englishListing = completion.choices?.[0]?.message?.content?.trim() || "❌ Failed to generate listing.";
+    const englishListing = completion.choices?.[0]?.message?.content ?? null;
 
-    if (!translate) {
-      return NextResponse.json({ listing: englishListing });
+    if (!englishListing) {
+      return NextResponse.json({ error: 'Failed to generate English listing.' }, { status: 500 });
     }
 
-    const spanishPrompt = `Translate this real estate listing into Spanish:\n\n${englishListing}`;
-    const translated = await openai.chat.completions.create({
-      model: "gpt-4",
-      messages: [
-        {
-          role: "user" as const,
-          content: spanishPrompt,
-        },
-      ],
-      temperature: 0.5,
-    });
+    // Optional: Translate to Spanish
+    if (translate) {
+      const spanishPrompt = `Translate this real estate listing into Spanish:\n\n${englishListing}`;
 
-    const spanishListing = translated.choices?.[0]?.message?.content?.trim() || "❌ Failed to translate listing.";
+      const translated = await openai.chat.completions.create({
+        model: 'gpt-4',
+        messages: [{ role: 'user', content: spanishPrompt }],
+        temperature: 0.7,
+      });
 
-    return NextResponse.json({ listing: spanishListing });
-  } catch (error) {
-    console.error("❌ API Error:", error);
-    return NextResponse.json({ listing: "❌ Error generating listing." }, { status: 500 });
+      const spanishListing = translated.choices?.[0]?.message?.content ?? null;
+
+      return NextResponse.json({ listing: spanishListing });
+    }
+
+    return NextResponse.json({ listing: englishListing });
+
+  } catch (err: any) {
+    console.error('Error in /api/generate:', err);
+    return NextResponse.json({ error: err.message || 'Unknown error occurred' }, { status: 500 });
   }
 }
