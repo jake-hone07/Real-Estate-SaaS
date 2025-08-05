@@ -5,10 +5,20 @@ import ListingForm from '@/components/ListingForm';
 export default function DashboardPage() {
   const [listing, setListing] = useState('');
 
-  const handleGenerate = (formData: any) => {
-    console.log('Form submitted:', formData);
-    setListing(`📦 AI listing coming soon...`); // placeholder for now
-  };
+ const handleGenerate = async (formData: any) => {
+  const response = await fetch("/api/generate", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(formData), // comes from <ListingForm onGenerate={handleGenerate} />
+  });
+
+  const data = await response.json();
+
+  setListing(`🏡 ${data.listing}`);
+};
+
 
   return (
     <main className="min-h-screen p-8 bg-gray-50">
