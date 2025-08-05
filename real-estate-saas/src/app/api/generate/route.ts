@@ -1,6 +1,5 @@
 // src/app/api/generate/route.ts
-import OpenAI from 'openai';
-import { ChatCompletionMessageParam } from 'openai/resources/chat';
+import { OpenAI } from "openai";
 import { NextRequest, NextResponse } from "next/server";
 
 const openai = new OpenAI({
@@ -18,16 +17,18 @@ Bathrooms: ${bathrooms}
 Square Feet: ${squareFeet}
 Key Features: ${features}`;
 
-    const messages: ChatCompletionMessageParam[] = [
-  { role: "user", content: basePrompt }
-];
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
-      messages,
+      messages: [
+        {
+          role: "user" as const,
+          content: basePrompt,
+        },
+      ],
       temperature: 0.7,
     });
 
-    const englishListing = completion.choices[0].message.content;
+    const englishListing = completion.choices?.[0]?.message?.content?.trim() || "❌ Failed to generate listing.";
 
     if (!translate) {
       return NextResponse.json({ listing: englishListing });
@@ -36,14 +37,20 @@ Key Features: ${features}`;
     const spanishPrompt = `Translate this real estate listing into Spanish:\n\n${englishListing}`;
     const translated = await openai.chat.completions.create({
       model: "gpt-4",
-      messages: [{ role: "user", content: spanishPrompt }],
+      messages: [
+        {
+          role: "user" as const,
+          content: spanishPrompt,
+        },
+      ],
       temperature: 0.5,
     });
 
-    const spanishListing = translated.choices[0].message.content;
+    const spanishListing = translated.choices?.[0]?.message?.content?.trim() || "❌ Failed to translate listing.";
+
     return NextResponse.json({ listing: spanishListing });
   } catch (error) {
-    console.error("API Error:", error);
-    return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
+    console.error("❌ API Error:", error);
+    return NextResponse.json({ listing: "❌ Error generating listing." }, { status: 500 });
   }
 }

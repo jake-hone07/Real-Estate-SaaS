@@ -15,9 +15,14 @@ export default function DashboardPage() {
   });
 
   const data = await response.json();
+console.log("🔍 API Response:", data);
 
-  setListing(`🏡 ${data.listing}`);
-};
+if (data.listing) {
+  setListing(`🧠 ${data.listing}`);
+} else {
+  setListing("⚠️ No listing generated.");
+}
+
 
 
   return (
@@ -34,4 +39,4 @@ export default function DashboardPage() {
   );
 }
 
-
+}
