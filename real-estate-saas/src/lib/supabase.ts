@@ -17,7 +17,7 @@ export const addListing = async (listing: {
   translate: boolean
 }) => {
 
-  const { data, error } = await supabase.from('listings').insert([listing])
+  const { data, error } = await supabase.from('Listings').insert([listing])
   if (error) throw new Error(error.message)
   return data
 }

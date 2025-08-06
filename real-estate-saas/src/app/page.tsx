@@ -45,16 +45,22 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       })
+console.log("Response from /api/generate", response);
 
       const data = await response.json()
+console.log("Parsed JSON data", data);
+console.log("Sending to Supabase", {
+  ...form,
+  description: data.listing,
+});
 
       if (!response.ok) throw new Error(data.error || 'Something went wrong.')
 
-      setGeneratedListing(data.result)
+      setGeneratedListing(data.listing)
 
       await addListing({
   title: form.address,
-  description: data.result,
+  description: data.listing,
   address: form.address,
   price: Number(form.price),
   bedrooms: Number(form.bedrooms),
