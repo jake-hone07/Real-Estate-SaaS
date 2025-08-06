@@ -13,7 +13,14 @@ export default function Home() {
   features: "",
   tone: "",
   translate: false,
+  neighborhood: "",
+  interiorStyle: "",
+  renovations: "",
+  outdoorFeatures: "",
+  amenities: "",
+  hoaInfo: "",
 });
+
 
 
   const [generatedListing, setGeneratedListing] = useState('')
@@ -131,6 +138,13 @@ console.log("Sending to Supabase", {
     placeholder="Extra Features (e.g. pool, large yard)"
     className="w-full p-3 border rounded"
   />
+  <input name="neighborhood" value={form.neighborhood} onChange={handleChange} placeholder="Neighborhood" className="w-full p-3 border rounded" />
+<input name="interiorStyle" value={form.interiorStyle} onChange={handleChange} placeholder="Interior Style (e.g. Modern, Rustic)" className="w-full p-3 border rounded" />
+<input name="renovations" value={form.renovations} onChange={handleChange} placeholder="Recent Renovations" className="w-full p-3 border rounded" />
+<input name="outdoorFeatures" value={form.outdoorFeatures} onChange={handleChange} placeholder="Outdoor Features (e.g. Pool, Deck)" className="w-full p-3 border rounded" />
+<input name="amenities" value={form.amenities} onChange={handleChange} placeholder="Nearby Amenities (e.g. Parks, Shops)" className="w-full p-3 border rounded" />
+<input name="hoaInfo" value={form.hoaInfo} onChange={handleChange} placeholder="HOA Info (optional)" className="w-full p-3 border rounded" />
+
   <select
     name="tone"
     value={form.tone}

@@ -4,20 +4,26 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 export const supabase = createClient(url, anon);
-export const addListing = async (listing: {
-  title: string
-  description: string
-  address: string
-  price: number
-  bedrooms: number
-  bathrooms: number
-  sqft: number
-  features: string
-  tone: string
-  translate: boolean
-}) => {
+export async function addListing(listing: {
+  title: string;
+  description: string;
+  address: string;
+  price: number;
+  bedrooms: number;
+  bathrooms: number;
+  sqft: number;
+  features: string;
+  tone: string;
+  translate: boolean;
+  neighborhood?: string;
+  interiorStyle?: string;
+  renovations?: string;
+  outdoorFeatures?: string;
+  nearbyAmenities?: string;
+  hoaInfo?: string;
+}) {
+  const { error } = await supabase.from('listings').insert([listing]);
 
-  const { data, error } = await supabase.from('Listings').insert([listing])
-  if (error) throw new Error(error.message)
-  return data
+  if (error) throw new Error(error.message);
 }
+
