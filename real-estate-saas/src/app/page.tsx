@@ -17,7 +17,7 @@ export default function Home() {
   interiorStyle: "",
   renovations: "",
   outdoorFeatures: "",
-  amenities: "",
+  nearbyAmenities: "",
   hoaInfo: "",
 });
 
@@ -76,6 +76,12 @@ console.log("Sending to Supabase", {
   features: form.features,
   tone: form.tone,
   translate: form.translate,
+  neighborhood: form.neighborhood,
+interiorStyle: form.interiorStyle,
+renovations: form.renovations,
+outdoorFeatures: form.outdoorFeatures,
+nearbyAmenities: form.nearbyAmenities,
+hoaInfo: form.hoaInfo,
 })
 
 
@@ -138,12 +144,55 @@ console.log("Sending to Supabase", {
     placeholder="Extra Features (e.g. pool, large yard)"
     className="w-full p-3 border rounded"
   />
-  <input name="neighborhood" value={form.neighborhood} onChange={handleChange} placeholder="Neighborhood" className="w-full p-3 border rounded" />
-<input name="interiorStyle" value={form.interiorStyle} onChange={handleChange} placeholder="Interior Style (e.g. Modern, Rustic)" className="w-full p-3 border rounded" />
-<input name="renovations" value={form.renovations} onChange={handleChange} placeholder="Recent Renovations" className="w-full p-3 border rounded" />
-<input name="outdoorFeatures" value={form.outdoorFeatures} onChange={handleChange} placeholder="Outdoor Features (e.g. Pool, Deck)" className="w-full p-3 border rounded" />
-<input name="amenities" value={form.amenities} onChange={handleChange} placeholder="Nearby Amenities (e.g. Parks, Shops)" className="w-full p-3 border rounded" />
-<input name="hoaInfo" value={form.hoaInfo} onChange={handleChange} placeholder="HOA Info (optional)" className="w-full p-3 border rounded" />
+  <input
+  type="text"
+  name="neighborhood"
+  value={form.neighborhood}
+  onChange={handleChange}
+  placeholder="Neighborhood"
+  className="w-full p-3 border rounded"
+/>
+<input
+  type="text"
+  name="interiorStyle"
+  value={form.interiorStyle}
+  onChange={handleChange}
+  placeholder="Interior Style"
+  className="w-full p-3 border rounded"
+/>
+<input
+  type="text"
+  name="renovations"
+  value={form.renovations}
+  onChange={handleChange}
+  placeholder="Recent Renovations"
+  className="w-full p-3 border rounded"
+/>
+<input
+  type="text"
+  name="outdoorFeatures"
+  value={form.outdoorFeatures}
+  onChange={handleChange}
+  placeholder="Outdoor Features"
+  className="w-full p-3 border rounded"
+/>
+<input
+  type="text"
+  name="nearbyAmenities"
+  value={form.nearbyAmenities}
+  onChange={handleChange}
+  placeholder="Nearby Amenities"
+  className="w-full p-3 border rounded"
+/>
+<input
+  type="text"
+  name="hoaInfo"
+  value={form.hoaInfo}
+  onChange={handleChange}
+  placeholder="HOA Info (optional)"
+  className="w-full p-3 border rounded"
+/>
+
 
   <select
     name="tone"
