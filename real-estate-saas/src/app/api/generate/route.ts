@@ -38,29 +38,27 @@ function buildPrompt(input: ListingInput): string {
     hoaInfo,
   } = input;
 
-  let prompt = `Write a short, professional, engaging real estate or vacation rental listing (~150-200 words) based on the following property details. Format it like a polished Airbnb description, with 2–3 short paragraphs and a persuasive closing sentence. Avoid mentioning "undefined" if any fields are blank.
+  let prompt = `Write a compelling Airbnb-style property listing in ~150-200 words. Use a ${tone?.toLowerCase() || 'professional'} tone and structure it like a high-quality Airbnb description: 2–3 vivid, engaging paragraphs followed by a persuasive closing line. Do not say "undefined" — if info is missing, smoothly skip it.
 
-Address: ${address}
-Bedrooms: ${bedrooms}
-Bathrooms: ${bathrooms}
-Square Feet: ${squareFeet}
-Neighborhood: ${neighborhood}
-Interior Style: ${interiorStyle}
-Recent Renovations: ${renovations}
-Outdoor Features: ${outdoorFeatures}
-Key Features: ${features}
-Nearby Amenities: ${nearbyAmenities}
-HOA Info: ${hoaInfo}
-Tone: ${tone}
+Details to include:
+- The property is located at ${address || '[no address provided]'}, in the ${neighborhood || '[neighborhood unspecified]'} neighborhood.
+- It has ${bedrooms || '?'} bedrooms, ${bathrooms || '?'} bathrooms, and approximately ${squareFeet || '?'} square feet.
+- Interior style: ${interiorStyle}
+- Renovations: ${renovations}
+- Outdoor features: ${outdoorFeatures}
+- Special features: ${features}
+- Nearby amenities: ${nearbyAmenities}
+- HOA info: ${hoaInfo}
 
-Focus on vivid, sensory-rich details, highlight what's unique about the space, and keep the flow natural.`;
+Focus on what makes this place a unique, relaxing, or luxurious stay. Make it feel aspirational and inviting for short-term renters.`;
 
   if (translate) {
-    prompt += ` After the English version, provide a professional Spanish translation that matches the same tone.`;
+    prompt += `\n\nThen, provide a Spanish translation of the entire listing, using the same tone and formatting.`;
   }
 
   return prompt;
 }
+
 
 export async function POST(req: Request) {
   try {

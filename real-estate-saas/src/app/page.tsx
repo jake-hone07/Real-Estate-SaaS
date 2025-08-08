@@ -44,21 +44,16 @@ export default function Home() {
   const [error, setError] = useState('');
 
   const handleChange = (
-  e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
-) => {
-  const { name, type, value } = e.target;
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) => {
+    const { name, type, value } = e.target;
+    const inputValue = type === 'checkbox' ? (e.target as HTMLInputElement).checked : value;
 
-  const inputValue =
-    type === 'checkbox'
-      ? (e.target as HTMLInputElement).checked
-      : value;
-
-  setForm((prev) => ({
-    ...prev,
-    [name]: inputValue,
-  }));
-};
-
+    setForm((prev) => ({
+      ...prev,
+      [name]: inputValue,
+    }));
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -111,24 +106,125 @@ export default function Home() {
     <main className="max-w-xl mx-auto p-8">
       <h1 className="text-2xl font-bold mb-6">AirB&B Description Generator</h1>
 
-      {/* Listing Form */}
-      <form onSubmit={handleSubmit} className="space-y-6 w-full max-w-xl">
-        {/* (same fieldset structure as you pasted — keep it exactly as-is, it’s 🔥) */}
-        {/* Don’t forget to paste back your full fieldset form code here if needed */}
-        {/* Button */}
-        <button
-          type="submit"
-          disabled={loading}
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 w-full mt-4"
-        >
-          {loading ? 'Generating...' : 'Generate Listing'}
-        </button>
-      </form>
+     <form onSubmit={handleSubmit} className="space-y-4 w-full max-w-xl">
+  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <input
+      name="address"
+      placeholder="Address"
+      value={form.address}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <input
+      name="bedrooms"
+      placeholder="Bedrooms"
+      value={form.bedrooms}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <input
+      name="bathrooms"
+      placeholder="Bathrooms"
+      value={form.bathrooms}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <input
+      name="squareFeet"
+      placeholder="Square Feet"
+      value={form.squareFeet}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <input
+      name="price"
+      placeholder="Price"
+      value={form.price}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <input
+      name="features"
+      placeholder="Key Features"
+      value={form.features}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <input
+      name="tone"
+      placeholder="Tone (e.g. cozy, elegant, modern)"
+      value={form.tone}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <div className="flex items-center gap-2 px-2">
+      <input
+        type="checkbox"
+        name="translate"
+        checked={form.translate}
+        onChange={handleChange}
+        className="w-4 h-4"
+      />
+      <label className="text-white text-sm">Translate to Spanish</label>
+    </div>
+    <input
+      name="neighborhood"
+      placeholder="Neighborhood"
+      value={form.neighborhood}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <input
+      name="interiorStyle"
+      placeholder="Interior Style"
+      value={form.interiorStyle}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <input
+      name="renovations"
+      placeholder="Recent Renovations"
+      value={form.renovations}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <input
+      name="outdoorFeatures"
+      placeholder="Outdoor Features"
+      value={form.outdoorFeatures}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <input
+      name="nearbyAmenities"
+      placeholder="Nearby Amenities"
+      value={form.nearbyAmenities}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+    <input
+      name="hoaInfo"
+      placeholder="HOA Info"
+      value={form.hoaInfo}
+      onChange={handleChange}
+      className="w-full px-4 py-2 rounded border border-gray-300 bg-white text-black"
+    />
+  </div>
 
-      {/* Error */}
+  <button
+    type="submit"
+    disabled={loading}
+    className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 w-full transition"
+  >
+    {loading ? 'Generating...' : 'Generate Listing'}
+  </button>
+</form>
+
+
+
+
       {error && <p className="text-red-600 mt-4">{error}</p>}
 
-      {/* Generated Output */}
       {generatedListing && (
         <div className="mt-6 p-6 bg-white border rounded-xl shadow-lg space-y-6">
           <h2 className="text-xl font-semibold text-gray-800 text-center">🏠 Generated Listing</h2>
@@ -152,7 +248,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Recent Listings */}
       <RecentListings />
     </main>
   );
