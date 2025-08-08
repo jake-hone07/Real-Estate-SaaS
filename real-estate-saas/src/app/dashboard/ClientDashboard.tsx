@@ -1,14 +1,29 @@
 'use client';
 
+import Navbar from '@/components/Navbar';
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { supabase as clientSupabase, addListing } from '@/lib/supabase';
 import ListingForm from '@/components/ListingForm';
+import ListingModal from '@/components/ListingModal';
+import { useSession } from '@supabase/auth-helpers-react';
+import { useRouter } from 'next/navigation';
 
 export default function ClientDashboard() {
+  const session = useSession(); // ✅ valid use of hook
+  const router = useRouter();
+
   const [listing, setListing] = useState<string | null>(null);
   const [listings, setListings] = useState<any[]>([]);
   const [loadingListings, setLoadingListings] = useState(false);
+  const [selectedListing, setSelectedListing] = useState<any | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!session) {
+      router.push('/login');
+    }
+  }, [session]);
 
   const fetchListings = async () => {
     setLoadingListings(true);
@@ -94,49 +109,70 @@ export default function ClientDashboard() {
   };
 
   return (
-    <main className="min-h-screen p-8 bg-gray-50">
-      <h1 className="text-2xl font-bold mb-4">🏡 Listing Generator</h1>
+    <>
+      <Navbar />
+      <main className="min-h-screen p-8 bg-gray-50">
+        <h1 className="text-2xl font-bold mb-4">🏡 Listing Generator</h1>
 
-      <ListingForm onGenerate={handleGenerate} />
+        <ListingForm onGenerate={handleGenerate} />
 
-      {listing && (
-        <div className="mt-6 p-6 bg-white rounded shadow">
-          <h2 className="font-semibold text-lg">Generated Listing</h2>
-          <pre className="whitespace-pre-wrap text-gray-700">{listing}</pre>
-        </div>
-      )}
+        {listing && (
+          <div className="mt-6 p-6 bg-white rounded shadow">
+            <h2 className="font-semibold text-lg">Generated Listing</h2>
+            <pre className="whitespace-pre-wrap text-gray-700">{listing}</pre>
+          </div>
+        )}
 
-      <h2 className="text-xl font-semibold mt-10 mb-4">📜 Your Saved Listings</h2>
-      {loadingListings ? (
-        <p>Loading...</p>
-      ) : listings.length === 0 ? (
-        <p className="text-gray-500">No listings yet.</p>
-      ) : (
-        <div className="space-y-4">
-          {listings.map((item) => (
-            <div key={item.id} className="p-4 bg-white rounded shadow">
-              <h3 className="font-semibold text-blue-600">{item.title}</h3>
-              <p className="text-sm text-gray-600">
-                {(item.description || 'No description').slice(0, 100)}...
-              </p>
-              <div className="mt-2 space-x-4">
-                <button
-                  className="text-sm text-blue-500 hover:underline"
-                  onClick={() => handleCopy(item.description)}
-                >
-                  Copy
-                </button>
-                <button
-                  className="text-sm text-red-500 hover:underline"
-                  onClick={() => handleDelete(item.id)}
-                >
-                  Delete
-                </button>
+        <h2 className="text-xl font-semibold mt-10 mb-4">📜 Your Saved Listings</h2>
+        {loadingListings ? (
+          <p>Loading...</p>
+        ) : listings.length === 0 ? (
+          <p className="text-gray-500">No listings yet.</p>
+        ) : (
+          <div className="space-y-4">
+            {listings.map((item) => (
+              <div key={item.id} className="p-4 bg-white rounded shadow">
+                <h3 className="font-semibold text-blue-600">{item.title}</h3>
+                <p className="text-sm text-gray-600">
+                  {(item.description || 'No description').slice(0, 100)}...
+                </p>
+                <div className="mt-2 space-x-4">
+                  <button
+                    className="text-sm text-blue-500 hover:underline"
+                    onClick={() => handleCopy(item.description)}
+                  >
+                    Copy
+                  </button>
+                  <button
+                    className="text-sm text-green-600 hover:underline"
+                    onClick={() => {
+                      setSelectedListing(item);
+                      setModalOpen(true);
+                    }}
+                  >
+                    View
+                  </button>
+                  <button
+                    className="text-sm text-red-500 hover:underline"
+                    onClick={() => handleDelete(item.id)}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </main>
+            ))}
+          </div>
+        )}
+
+        {selectedListing && (
+          <ListingModal
+            isOpen={modalOpen}
+            onClose={() => setModalOpen(false)}
+            title={selectedListing.title}
+            description={selectedListing.description}
+          />
+        )}
+      </main>
+    </>
   );
 }

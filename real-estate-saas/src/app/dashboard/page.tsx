@@ -5,13 +5,14 @@ import ClientDashboard from './ClientDashboard';
 
 export default async function DashboardPage() {
   const supabase = createServerComponentClient({ cookies });
+
   const {
     data: { session },
   } = await supabase.auth.getSession();
 
   if (!session) {
-    redirect('/login');
+    redirect('/login'); // redirect guests to login
   }
 
-  return <ClientDashboard />;
+  return <ClientDashboard />; // show dashboard if authenticated
 }
