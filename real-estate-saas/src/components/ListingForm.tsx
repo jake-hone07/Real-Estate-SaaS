@@ -1,53 +1,64 @@
 'use client';
+
 import { useState } from 'react';
-import { addListing } from '@/lib/supabase';
+
+type FormData = {
+  address: string;
+  bedrooms: number;
+  bathrooms: number;
+  squareFeet: number;
+  features: string;
+  tone: string;
+  translate: boolean;
+  neighborhood: string;
+  interiorStyle: string;
+  renovations: string;
+  outdoorFeatures: string;
+  amenitiesNearby: string;
+  hoaInfo: string;
+};
 
 type Props = {
-  onGenerate: (formData: {
-    address: string;
-    bedrooms: number;
-    bathrooms: number;
-    squareFeet: number;
-    features: string;
-    tone: string;
-    translate: boolean;
-    neighborhood: string;
-    interiorStyle: string;
-    renovations: string;
-    outdoorFeatures: string;
-    amenitiesNearby: string;
-    hoaInfo: string;
-  }) => void;
+  onGenerate: (formData: FormData) => void;
+};
+
+const initialFormState: FormData = {
+  address: '',
+  bedrooms: 2,
+  bathrooms: 1,
+  squareFeet: 800,
+  features: '',
+  tone: 'Casual',
+  translate: false,
+  neighborhood: '',
+  interiorStyle: '',
+  renovations: '',
+  outdoorFeatures: '',
+  amenitiesNearby: '',
+  hoaInfo: '',
 };
 
 export default function ListingForm({ onGenerate }: Props) {
-  const [formData, setFormData] = useState({
-    address: '',
-    bedrooms: 2,
-    bathrooms: 1,
-    squareFeet: 800,
-    features: '',
-    tone: 'Casual',
-    translate: false,
-    neighborhood: '',
-    interiorStyle: '',
-    renovations: '',
-    outdoorFeatures: '',
-    amenitiesNearby: '',
-    hoaInfo: '',
-  });
+  const [formData, setFormData] = useState<FormData>(initialFormState);
 
   const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
-  ) => {
-    const target = e.target;
-    const { name, type, value } = target;
+  e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+) => {
+  const { name, type, value } = e.target;
 
-    setFormData((prev) => ({
-      ...prev,
-      [name]: type === 'checkbox' && 'checked' in target ? (target as HTMLInputElement).checked : value,
-    }));
-  };
+  const isCheckbox = type === 'checkbox';
+  const newValue = isCheckbox
+    ? (e.target as HTMLInputElement).checked
+    : type === 'number'
+    ? Number(value)
+    : value;
+
+  setFormData((prev) => ({
+    ...prev,
+    [name]: newValue,
+  }));
+};
+
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,79 +67,29 @@ export default function ListingForm({ onGenerate }: Props) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <input
-        className="w-full p-2 border rounded"
-        name="address"
-        value={formData.address}
-        onChange={handleChange}
-        placeholder="Property Address"
-      />
-      <input
-        className="w-full p-2 border rounded"
-        name="neighborhood"
-        value={formData.neighborhood}
-        onChange={handleChange}
-        placeholder="Neighborhood"
-      />
-      <input
-        className="w-full p-2 border rounded"
-        name="bedrooms"
-        type="number"
-        value={formData.bedrooms}
-        onChange={handleChange}
-        placeholder="Bedrooms"
-      />
-      <input
-        className="w-full p-2 border rounded"
-        name="bathrooms"
-        type="number"
-        value={formData.bathrooms}
-        onChange={handleChange}
-        placeholder="Bathrooms"
-      />
-      <input
-        className="w-full p-2 border rounded"
-        name="squareFeet"
-        type="number"
-        value={formData.squareFeet}
-        onChange={handleChange}
-        placeholder="Square Feet"
-      />
-      <input
-        className="w-full p-2 border rounded"
-        name="interiorStyle"
-        value={formData.interiorStyle}
-        onChange={handleChange}
-        placeholder="Interior Style (e.g. Modern, Rustic)"
-      />
-      <input
-        className="w-full p-2 border rounded"
-        name="renovations"
-        value={formData.renovations}
-        onChange={handleChange}
-        placeholder="Recent Renovations"
-      />
-      <input
-        className="w-full p-2 border rounded"
-        name="outdoorFeatures"
-        value={formData.outdoorFeatures}
-        onChange={handleChange}
-        placeholder="Outdoor Features (e.g. hot tub, patio)"
-      />
-      <input
-        className="w-full p-2 border rounded"
-        name="amenitiesNearby"
-        value={formData.amenitiesNearby}
-        onChange={handleChange}
-        placeholder="Nearby Amenities (e.g. restaurants, trails)"
-      />
-      <input
-        className="w-full p-2 border rounded"
-        name="hoaInfo"
-        value={formData.hoaInfo}
-        onChange={handleChange}
-        placeholder="HOA Information (optional)"
-      />
+      {[
+        { name: 'address', placeholder: 'Property Address' },
+        { name: 'neighborhood', placeholder: 'Neighborhood' },
+        { name: 'bedrooms', type: 'number', placeholder: 'Bedrooms' },
+        { name: 'bathrooms', type: 'number', placeholder: 'Bathrooms' },
+        { name: 'squareFeet', type: 'number', placeholder: 'Square Feet' },
+        { name: 'interiorStyle', placeholder: 'Interior Style (e.g. Modern, Rustic)' },
+        { name: 'renovations', placeholder: 'Recent Renovations' },
+        { name: 'outdoorFeatures', placeholder: 'Outdoor Features (e.g. hot tub, patio)' },
+        { name: 'amenitiesNearby', placeholder: 'Nearby Amenities (e.g. restaurants, trails)' },
+        { name: 'hoaInfo', placeholder: 'HOA Information (optional)' },
+      ].map((input) => (
+        <input
+          key={input.name}
+          className="w-full p-2 border rounded"
+          name={input.name}
+          type={input.type ?? 'text'}
+          value={(formData as any)[input.name]}
+          onChange={handleChange}
+          placeholder={input.placeholder}
+        />
+      ))}
+
       <textarea
         className="w-full p-2 border rounded"
         name="features"
@@ -136,6 +97,7 @@ export default function ListingForm({ onGenerate }: Props) {
         onChange={handleChange}
         placeholder="Special Features or Notes"
       />
+
       <select
         name="tone"
         className="w-full p-2 border rounded"
@@ -148,6 +110,7 @@ export default function ListingForm({ onGenerate }: Props) {
         <option value="Luxury">Luxury</option>
         <option value="Romantic">Romantic</option>
       </select>
+
       <label className="flex items-center space-x-2">
         <input
           type="checkbox"
@@ -157,6 +120,7 @@ export default function ListingForm({ onGenerate }: Props) {
         />
         <span>Include Spanish translation</span>
       </label>
+
       <button type="submit" className="bg-blue-500 text-white px-4 py-2 rounded">
         Generate Listing
       </button>

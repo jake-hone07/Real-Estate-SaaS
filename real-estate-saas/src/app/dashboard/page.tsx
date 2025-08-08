@@ -4,10 +4,27 @@ import { useEffect, useState } from 'react';
 import ListingForm from '@/components/ListingForm';
 import { supabase, addListing } from '@/lib/supabase';
 
+interface FormData {
+  address: string;
+  bedrooms: number;
+  bathrooms: number;
+  squareFeet: number;
+  features: string;
+  tone: string;
+  translate: boolean;
+  neighborhood: string;
+  interiorStyle: string;
+  renovations: string;
+  outdoorFeatures: string;
+  amenitiesNearby: string;
+  hoaInfo: string;
+}
+
 export default function DashboardPage() {
   const [listing, setListing] = useState<string | null>(null);
   const [listings, setListings] = useState<any[]>([]);
   const [loadingListings, setLoadingListings] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const fetchListings = async () => {
     setLoadingListings(true);
@@ -17,7 +34,7 @@ export default function DashboardPage() {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('Error fetching listings:', error.message);
+      console.error('❌ Error fetching listings:', error.message);
     } else {
       setListings(data || []);
     }
@@ -29,9 +46,9 @@ export default function DashboardPage() {
     fetchListings();
   }, []);
 
-  const handleGenerate = async (formData: any) => {
+  const handleGenerate = async (formData: FormData) => {
+    setSaving(true);
     try {
-      // 🧠 Call GPT API to generate listing text
       const response = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -48,32 +65,33 @@ export default function DashboardPage() {
 
       setListing(generatedText);
 
-      // 💾 Save to Supabase
       await addListing({
-  title: formData.address || 'Untitled Listing',
-  description: generatedText,
-  address: formData.address,
-  price: 0, // ✅ Replace 0 with actual value if you plan to use it
-  bedrooms: formData.bedrooms,
-  bathrooms: formData.bathrooms,
-  squareFeet: formData.squareFeet,
-  features: formData.features,
-  tone: formData.tone,
-  translate: formData.translate,
-  neighborhood: formData.neighborhood,
-  interiorStyle: formData.interiorStyle,
-  renovations: formData.renovations,
-  outdoorFeatures: formData.outdoorFeatures,
-  nearbyAmenities: formData.amenitiesNearby,
-  hoaInfo: formData.hoaInfo,
-});
+        title: formData.address || 'Untitled Listing',
+        description: generatedText,
+        address: formData.address,
+        price: 0,
+        bedrooms: formData.bedrooms,
+        bathrooms: formData.bathrooms,
+        squareFeet: formData.squareFeet,
+        features: formData.features,
+        tone: formData.tone,
+        translate: formData.translate,
+        neighborhood: formData.neighborhood,
+        interiorStyle: formData.interiorStyle,
+        renovations: formData.renovations,
+        outdoorFeatures: formData.outdoorFeatures,
+        nearbyAmenities: formData.amenitiesNearby,
+        hoaInfo: formData.hoaInfo,
+      });
 
-
+      console.log('✅ Listing saved to Supabase');
       alert('✅ Listing saved!');
-      fetchListings(); // Refresh after save
+      fetchListings();
     } catch (err) {
-      console.error('❌ Error generating or saving listing:', err);
-      setListing('❌ Failed to generate or save listing.');
+      console.error('❌ Error saving listing:', err);
+      alert('❌ Failed to save listing.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -108,7 +126,7 @@ export default function DashboardPage() {
       {loadingListings ? (
         <p>Loading listings...</p>
       ) : listings.length === 0 ? (
-        <p>No listings saved yet.</p>
+        <p className="text-gray-500">No listings saved yet.</p>
       ) : (
         <div className="space-y-4">
           {listings.map((item) => (

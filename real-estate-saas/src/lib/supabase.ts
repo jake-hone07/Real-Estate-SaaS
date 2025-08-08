@@ -4,12 +4,8 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 export const supabase = createClient(url, anon);
-const { data } = await supabase.from('listings').select('*').order('created_at', { ascending: false });
 
-// ✅ Move this after supabase is declared
-supabase.from('listings').select('*').then(console.log);
-
-export async function addListing(listing: {
+export type NewListing = {
   title: string;
   description: string;
   address: string;
@@ -26,14 +22,13 @@ export async function addListing(listing: {
   outdoorFeatures?: string;
   nearbyAmenities?: string;
   hoaInfo?: string;
-}) {
-  const { error } = await supabase.from('listings').insert([
-    {
-      ...listing,
-      squareFeet: listing.squareFeet, // or use `sqft` consistently
-    },
-  ]);
+};
 
-  if (error) throw new Error(error.message);
+export async function addListing(listing: NewListing) {
+  const { error } = await supabase.from('listings').insert([listing]);
+
+  if (error) {
+    console.error('❌ Failed to add listing:', error.message);
+    throw new Error(error.message);
+  }
 }
-
