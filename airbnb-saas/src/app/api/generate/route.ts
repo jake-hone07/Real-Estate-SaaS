@@ -4,12 +4,18 @@ import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { OpenAI } from 'openai';
 
+/* -------------------- Config -------------------- */
+
 const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 if (!process.env.OPENAI_API_KEY) {
-  // Let devs see this early instead of mysterious 500s later
   console.warn('⚠️ OPENAI_API_KEY is not set');
 }
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+
+// Add any future premium-only templates here
+const PREMIUM_ONLY_TEMPLATES = new Set(['luxury']);
+
+type Plan = 'free' | 'starter' | 'premium';
 
 type ListingInput = {
   address?: string;
@@ -23,14 +29,35 @@ type ListingInput = {
   interiorStyle?: string;
   renovations?: string;
   outdoorFeatures?: string;
-  amenitiesNearby?: string; // client variant
-  nearbyAmenities?: string; // normalized internal field
+  amenitiesNearby?: string;   // client alias
+  nearbyAmenities?: string;   // normalized
   hoaInfo?: string;
+  template?: 'default' | 'luxury' | 'rental' | 'vacation' | 'flip';
+  [k: string]: any;
 };
 
-/* -------------------- Helpers -------------------- */
+/* -------------------- Utils -------------------- */
 
-/** Build a clean facts object (no empty/undefined). */
+const ok = (body: any, init?: number) =>
+  NextResponse.json(body, { status: init ?? 200 });
+
+const err = (message: string, status = 400) =>
+  NextResponse.json({ error: message }, { status });
+
+function normalizeInput(raw: any): ListingInput {
+  const input = (raw ?? {}) as ListingInput;
+  return {
+    ...input,
+    nearbyAmenities:
+      input.nearbyAmenities ??
+      (input as any).amenitiesNearby ??
+      (input as any).nearby_amenities ??
+      undefined,
+    tone: input.tone || 'Professional',
+    template: input.template || 'default',
+  };
+}
+
 function buildFacts(input: ListingInput) {
   const facts: Record<string, string | number | boolean> = {};
   const add = (k: keyof ListingInput, v: any) => {
@@ -45,33 +72,32 @@ function buildFacts(input: ListingInput) {
   add('renovations', input.renovations);
   add('outdoorFeatures', input.outdoorFeatures);
   add('features', input.features);
-  add('nearbyAmenities', input.nearbyAmenities ?? input.amenitiesNearby);
+  add('nearbyAmenities', input.nearbyAmenities);
   add('hoaInfo', input.hoaInfo);
   add('tone', input.tone || 'Professional');
   return facts;
 }
 
-/** Strong, facts-only prompt with explicit structure/length. */
 function buildPrompt(input: ListingInput): string {
   const facts = buildFacts(input);
   const tone = String(facts.tone || 'Professional').toLowerCase();
 
-  return (
-`You are a real-estate copywriter. Produce an Airbnb-style listing that is FACTS-ONLY.
+  return `You are a real-estate copywriter. Produce an Airbnb-style listing that is FACTS-ONLY.
 
 FACTS (authoritative JSON):
 ${JSON.stringify(facts, null, 2)}
 
 HARD RULES:
 - Use ONLY the data in FACTS. Do not invent amenities, views, distances, or neighborhood claims.
-- If a detail is missing in FACTS, omit it without speculation.
+- If a detail is missing in FACTS, omit it.
 - Keep it specific, concrete, and buyer/renter friendly.
 - Length target: 220–260 words (English).
 - Tone: ${tone}.
 
-OUTPUT FORMAT (exact headings, with a blank line after each heading):
+OUTPUT FORMAT (exact headings, with a blank line after each):
+
 **Overview**
-[Two short paragraphs, 2–4 sentences each. Summarize who this suits + key benefits derived from FACTS.]
+[Two short paragraphs, 2–4 sentences each. Summarize who this suits + key benefits from FACTS.]
 
 **Highlights**
 - [3–6 bullets. Each bullet maps 1:1 to an item in FACTS.]
@@ -82,48 +108,41 @@ OUTPUT FORMAT (exact headings, with a blank line after each heading):
 - Renovations: ${input.renovations || '—'}
 - Outdoor features: ${input.outdoorFeatures || '—'}
 - Special features: ${input.features || '—'}
-- Nearby amenities: ${(input.nearbyAmenities ?? input.amenitiesNearby) || '—'}
+- Nearby amenities: ${(input.nearbyAmenities) || '—'}
 - HOA: ${input.hoaInfo || '—'}
 
 QUALITY:
 - Prefer concrete nouns and active verbs over vague hype.
-- No placeholders like "undefined".`
-  + (input.translate
-      ? `
+- No placeholders like "undefined".` + (input.translate
+  ? `
 
 Now provide a full Spanish translation with the SAME headings and bullet structure. Keep FACTS-ONLY.`
-      : '')
-  );
+  : '');
 }
 
-/** Strip lines that mention risky amenities not present in inputs. */
 function sanitizeAgainstFacts(text: string, input: ListingInput) {
   const allowed = [
     input.address, input.neighborhood, input.interiorStyle, input.renovations,
     input.outdoorFeatures, input.features, input.nearbyAmenities, input.amenitiesNearby, input.hoaInfo,
-  ]
-    .filter(Boolean)
-    .map((s) => String(s).toLowerCase());
+  ].filter(Boolean).map((s) => String(s).toLowerCase());
 
   const risky = [
     'balcony','deck','patio','fireplace','pool','hot tub','jacuzzi','sauna',
     'rooftop','mountain view','ocean view','waterfront','garage','driveway','spa'
   ];
 
-  const lines = text.split('\n');
-  const cleaned = lines.filter((line) => {
-    const l = line.toLowerCase();
-    const mentionsRisky = risky.some((w) => l.includes(w));
-    if (!mentionsRisky) return true;
-
-    // allow only if that risky term is explicitly present in user inputs
-    const allowedHit = allowed.some((a) =>
-      risky.some((w) => a.includes(w) && l.includes(w))
-    );
-    return allowedHit;
-  });
-
-  return cleaned.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return text
+    .split('\n')
+    .filter(line => {
+      const l = line.toLowerCase();
+      const mentionsRisky = risky.some(w => l.includes(w));
+      if (!mentionsRisky) return true;
+      // keep only if explicitly present in inputs
+      return allowed.some(a => risky.some(w => a.includes(w) && l.includes(w)));
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /* -------------------- Route -------------------- */
@@ -131,118 +150,134 @@ function sanitizeAgainstFacts(text: string, input: ListingInput) {
 export async function POST(req: Request) {
   const supabase = createRouteHandlerClient({ cookies });
 
-  // 1) Auth
-  const { data: userRes, error: userErr } = await supabase.auth.getUser();
-  if (userErr || !userRes?.user) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  }
-  const user = userRes.user;
+  // Auth
+  const { data: auth, error: authError } = await supabase.auth.getUser();
+  if (authError) return err('Auth failed', 500);
+  const user = auth?.user;
+  if (!user) return err('Not authenticated', 401);
 
-  // 2) Rate limit (max 1 request / 10s)
-  const { data: allowedRL, error: rlErr } = await supabase.rpc('rate_limit_generate');
-  if (rlErr) {
-    console.error('Rate limit check error:', rlErr.message);
-    return NextResponse.json({ error: 'Rate limit check failed' }, { status: 500 });
+  // Profile
+  const { data: profile, error: profileErr } = await supabase
+    .from('profiles')
+    .select('plan, credits')
+    .eq('id', user.id)
+    .single();
+  if (profileErr) return err('Profile fetch failed', 500);
+
+  const plan = (profile?.plan ?? 'free') as Plan;
+  const isPremium = plan === 'premium';
+
+  // Parse & normalize body
+  let raw: any;
+  try {
+    raw = await req.json();
+  } catch {
+    return err('Invalid JSON body', 400);
   }
-  if (!allowedRL) {
+  const input = normalizeInput(raw);
+
+  // 🔒 Generic premium gates (templates)
+  if (input.template && PREMIUM_ONLY_TEMPLATES.has(input.template) && !isPremium) {
     return NextResponse.json(
-      { error: 'Please wait a few seconds before generating again.' },
-      { status: 429 }
+      { error: 'PRO_FEATURE_LOCKED', message: 'This template is a Premium feature.' },
+      { status: 403 }
     );
   }
 
-  const refund = async () => { try { await supabase.rpc('refund_credit'); } catch {} };
+  // Rate limit (non-premium only)
+  if (!isPremium) {
+    const rl = await supabase.rpc('rate_limit_generate');
+    if (rl.error) return err('Rate limit check failed', 500);
+    if (!rl.data) return err('Please wait before generating again.', 429);
+  }
 
-  try {
-    // Normalize incoming body so we always use body.nearbyAmenities internally
-    const raw = (await req.json()) as any;
-    const body: ListingInput = {
-      ...raw,
-      nearbyAmenities:
-        raw?.nearbyAmenities ??
-        raw?.amenitiesNearby ??
-        raw?.nearby_amenities ??
-        undefined,
-    };
+  // Helpers to revert spend on failures
+  const refund = async () => {
+    try { await supabase.rpc('refund_credit'); } catch { /* no-op */ }
+  };
 
-    // 3) Spend one credit (atomic)
-    const { data: ok, error: spendErr } = await supabase.rpc('spend_credit_reserve');
-    if (spendErr || !ok) {
+  // Spend 1 credit upfront for non-premium (reserve)
+  if (!isPremium) {
+    const spend = await supabase.rpc('spend_credit_reserve');
+    if (spend.error || !spend.data) {
       return NextResponse.json({ error: 'Out of credits' }, { status: 402 });
     }
+  }
 
-    // 4) Generate (facts-only, market-ready)
-    const prompt = buildPrompt(body);
+  try {
+    // Generate
+    const prompt = buildPrompt(input);
     let listing = '';
     try {
       const completion = await openai.chat.completions.create({
         model: MODEL,
         messages: [{ role: 'user', content: prompt }],
-        temperature: 0.7, // lower = tighter to facts
+        temperature: 0.7,
       });
       listing = completion.choices?.[0]?.message?.content?.trim() ?? '';
-    } catch (modelErr: any) {
-      await refund();
-      return NextResponse.json({ error: `Model error: ${modelErr?.message || 'unknown'}` }, { status: 500 });
+    } catch (e: any) {
+      if (!isPremium) await refund();
+      return err(`Model error: ${e?.message || 'unknown'}`, 500);
     }
 
     if (!listing) {
-      await refund();
-      return NextResponse.json({ error: 'Generation failed (empty response)' }, { status: 500 });
+      if (!isPremium) await refund();
+      return err('Generation failed (empty response)', 500);
     }
 
-    // 4b) Sanitize hallucinated amenities against inputs
-    listing = sanitizeAgainstFacts(listing, body);
+    listing = sanitizeAgainstFacts(listing, input);
     if (!listing) {
-      await refund();
-      return NextResponse.json({ error: 'Generation failed after sanitization.' }, { status: 500 });
+      if (!isPremium) await refund();
+      return err('Generation failed after sanitization', 500);
     }
 
-    // 5) Minimal insert first (avoid schema mismatch), then optional patch
-    const minimal = {
+    // Insert listing
+    const insertPayload = {
       user_id: user.id,
-      title: body.address || 'Untitled',
+      title: input.address || 'Untitled',
       description: listing,
+      address: input.address ?? null,
+      bedrooms: input.bedrooms ?? null,
+      bathrooms: input.bathrooms ?? null,
+      squareFeet: input.squareFeet ?? null,
+      features: input.features ?? null,
+      tone: input.tone ?? null,
+      translate: input.translate ?? null,
+      neighborhood: input.neighborhood ?? null,
+      interiorStyle: input.interiorStyle ?? null,
+      renovations: input.renovations ?? null,
+      outdoorFeatures: input.outdoorFeatures ?? null,
+      nearbyAmenities: input.nearbyAmenities ?? null,
+      hoaInfo: input.hoaInfo ?? null,
+      template: input.template ?? null, // safe: exists if you ran the ALTER
     };
 
-    const { data: inserted, error: insertErr } = await supabase
+    const { data: saved, error: insertErr } = await supabase
       .from('listings')
-      .insert([minimal])
+      .insert(insertPayload)
       .select('*')
       .single();
 
-    if (insertErr || !inserted) {
-      await refund();
-      return NextResponse.json({ error: `DB insert failed: ${insertErr?.message || 'unknown'}` }, { status: 500 });
+    if (insertErr || !saved) {
+      if (!isPremium) await refund();
+      return err(`DB insert failed: ${insertErr?.message || 'unknown'}`, 500);
     }
 
-    // Best-effort update of optional fields (ignore errors)
-    try {
-      await supabase
-        .from('listings')
-        .update({
-          address: body.address ?? null,
-          bedrooms: body.bedrooms ?? null,
-          bathrooms: body.bathrooms ?? null,
-          squareFeet: body.squareFeet ?? null,
-          features: body.features ?? null,
-          tone: body.tone ?? null,
-          translate: body.translate ?? null,
-          neighborhood: body.neighborhood ?? null,
-          interiorStyle: body.interiorStyle ?? null,
-          renovations: body.renovations ?? null,
-          outdoorFeatures: body.outdoorFeatures ?? null,
-          nearbyAmenities: body.nearbyAmenities ?? null,
-          hoaInfo: body.hoaInfo ?? null,
-        })
-        .eq('id', inserted.id);
-    } catch {
-      /* non-fatal */
-    }
+    // Refresh plan/credits for UI badge
+    const { data: after } = await supabase
+      .from('profiles')
+      .select('plan, credits')
+      .eq('id', user.id)
+      .single();
 
-    return NextResponse.json({ listing, saved: inserted });
-  } catch (err: any) {
-    await refund();
-    return NextResponse.json({ error: err?.message || 'Unknown error' }, { status: 500 });
+    return ok({
+      listing,
+      saved,
+      plan: (after?.plan as Plan) ?? 'free',
+      credits: after?.plan === 'premium' ? 'unlimited' : (after?.credits ?? 0),
+    });
+  } catch (e: any) {
+    if (!isPremium) await refund();
+    return err(e?.message || 'Unknown error', 500);
   }
 }
