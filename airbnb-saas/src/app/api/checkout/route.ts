@@ -1,83 +1,68 @@
+// src/app/api/checkout/route.ts
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { stripe } from '@/lib/stripe';
-import { PLANS } from '@/lib/billing';
+import Stripe from 'stripe';
+import { getPlan } from '@/lib/billing';
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL;
+// Instantiate once per process
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: '2025-07-30.basil',
+});
 
-type PlanKey = keyof typeof PLANS;
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
 
 export async function POST(req: Request) {
-  const supabase = createRouteHandlerClient({ cookies });
-
-  // Auth
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-
-  // Plan
-  const { planKey } = (await req.json().catch(() => ({}))) as { planKey?: PlanKey };
-  const plan = planKey ? PLANS[planKey] : undefined;
-  if (!plan?.priceId) return NextResponse.json({ error: 'Invalid plan' }, { status: 400 });
-
-  // Load saved customer
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('stripe_customer_id, email')
-    .eq('id', user.id)
-    .single();
-
-  let customerId = (profile?.stripe_customer_id ?? null) as string | null;
-
-  // Try to use it in THIS Stripe mode; if it 404s (wrong mode), we’ll create a new one
-  if (customerId) {
-    try {
-      await stripe.customers.retrieve(customerId);
-    } catch {
-      customerId = null; // force new test/live customer
-    }
-  }
-
-  // Create & persist a new customer if needed
-  if (!customerId) {
-    const customer = await stripe.customers.create({
-      email: user.email ?? profile?.email ?? undefined,
-      metadata: { supabase_user_id: user.id },
-    });
-    customerId = customer.id;
-    await supabase.from('profiles').update({ stripe_customer_id: customerId }).eq('id', user.id);
-  }
-
-  const isSubscription = plan.mode === 'subscription';
-  const base = APP_URL || new URL(req.url).origin;
-  const successUrl = `${base}/dashboard?purchase=success`;
-  const cancelUrl = `${base}/pricing?canceled=1`;
-
   try {
+    const supabase = createRouteHandlerClient({ cookies });
+    const { data: auth } = await supabase.auth.getUser();
+    const user = auth?.user;
+    if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+
+    const body = (await req.json()) as { planKey?: string };
+    const resolved = getPlan(body?.planKey);
+    if (!resolved) {
+      return NextResponse.json({ error: 'Invalid plan' }, { status: 400 });
+    }
+    const { key: planKey, def: plan } = resolved;
+
+    // Ensure Stripe customer
+    const { data: prof } = await supabase
+      .from('profiles')
+      .select('stripe_customer_id')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    let customerId = prof?.stripe_customer_id as string | null;
+
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: user.email || undefined,
+        metadata: { supabase_user_id: user.id },
+      });
+      customerId = customer.id;
+      await supabase.from('profiles').update({ stripe_customer_id: customerId }).eq('id', user.id);
+    }
+
     const session = await stripe.checkout.sessions.create({
-      mode: isSubscription ? 'subscription' : 'payment',
+      mode: plan.mode === 'subscription' ? 'subscription' : 'payment',
+      customer: customerId!,
       line_items: [{ price: plan.priceId, quantity: 1 }],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      allow_promotion_codes: true,
-      metadata: { supabase_user_id: user.id, plan_key: String(planKey) },
-      ...(customerId ? { customer: customerId } : {}),
-      ...(isSubscription
+      success_url: `${APP_URL}/dashboard?purchase=success`,
+      cancel_url: `${APP_URL}/pricing?canceled=1`,
+      metadata: { supabase_user_id: user.id, plan_key: planKey },
+      ...(plan.mode === 'subscription'
         ? {
             subscription_data: {
-              metadata: { supabase_user_id: user.id, plan_key: String(planKey) },
+              metadata: { supabase_user_id: user.id, plan_key: planKey },
             },
           }
         : {}),
     });
 
     return NextResponse.json({ url: session.url });
-  } catch (err: any) {
-    console.error('Checkout session error:', err);
-    const message =
-      err?.type === 'StripeInvalidRequestError' ? `Stripe error: ${err.message}` : 'Checkout failed';
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch (e: any) {
+    console.error('checkout error:', e?.message || e);
+    return NextResponse.json({ error: 'Checkout failed' }, { status: 500 });
   }
 }
