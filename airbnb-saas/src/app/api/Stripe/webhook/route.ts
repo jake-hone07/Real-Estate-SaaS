@@ -1,83 +1,121 @@
+// src/app/api/stripe/webhook/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
-import { createClient } from '@supabase/supabase-js';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+// Ensure this route runs on Node, not Edge, and is never statically optimized
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const preferredRegion = 'home';
 
-// service-role client (needed in webhooks)
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// ---- Stripe ----
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: '2025-07-30.basil',
+});
 
-// Price IDs from env
-const COINS_PRICE_ID   = process.env.COINS_PRICE_ID!;
-const STARTER_PRICE_ID = process.env.STARTER_PRICE_ID!;
-const PREMIUM_PRICE_ID = process.env.PREMIUM_PRICE_ID!;
-
-// Idempotency helpers
-async function alreadyHandled(id: string) {
-  const { data } = await supabase
-    .from('stripe_events')
-    .select('id')
-    .eq('id', id)
-    .maybeSingle();
-  return !!data;
+// ---- Helpers ----
+/** Create Supabase admin client lazily at request time (avoids build-time env access). */
+function getAdminSupabase() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
+  }
+  // Delay importing supabase-js until runtime
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
+  return createClient(url, key);
 }
-async function markHandled(id: string) {
-  await supabase.from('stripe_events').insert({ id });
+
+/** Tiny type-safe helper for invoice.subscription which can be string | object | null */
+function extractSubIdFromInvoice(inv: Stripe.Invoice): string | null {
+  const v = (inv as unknown as { subscription?: string | Stripe.Subscription | null }).subscription;
+  return typeof v === 'string' ? v : null;
 }
+
+/** Tiny helper for session.subscription which can be string | object | null */
+function extractSubIdFromSession(sess: Stripe.Checkout.Session): string | null {
+  const v = (sess as unknown as { subscription?: string | Stripe.Subscription | null }).subscription;
+  return typeof v === 'string' ? v : null;
+}
+
+// Env-configured price IDs
+const COINS_PRICE_ID = process.env.COINS_PRICE_ID || '';
+const STARTER_PRICE_ID = process.env.STARTER_PRICE_ID || '';
+const PREMIUM_PRICE_ID = process.env.PREMIUM_PRICE_ID || '';
 
 export async function POST(req: NextRequest) {
-  const sig = req.headers.get('stripe-signature');
-  if (!sig) return NextResponse.json({ error: 'Missing signature' }, { status: 400 });
+  // Create admin client at runtime
+  const supabase = getAdminSupabase();
 
-  const buf = Buffer.from(await req.arrayBuffer());
-  let evt: Stripe.Event;
+  const signature = req.headers.get('stripe-signature');
+  if (!signature) {
+    return NextResponse.json({ error: 'Missing signature' }, { status: 400 });
+  }
 
+  let event: Stripe.Event;
   try {
-    evt = stripe.webhooks.constructEvent(buf, sig, process.env.STRIPE_WEBHOOK_SECRET!);
-  } catch (e: any) {
-    console.error('Invalid webhook signature:', e?.message);
+    const raw = Buffer.from(await req.arrayBuffer());
+    event = stripe.webhooks.constructEvent(
+      raw,
+      signature,
+      process.env.STRIPE_WEBHOOK_SECRET!
+    );
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Invalid signature';
+    console.error('Stripe webhook verify failed:', msg);
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
   }
 
-  // idempotency
-  if (await alreadyHandled(evt.id)) {
+  // --- Idempotency guard (stripe_events table with primary key id TEXT) ---
+  const { data: seen } = await supabase
+    .from('stripe_events')
+    .select('id')
+    .eq('id', event.id)
+    .maybeSingle();
+
+  if (seen?.id) {
     return NextResponse.json({ received: true, duplicate: true });
   }
 
   try {
-    switch (evt.type) {
+    switch (event.type) {
       case 'checkout.session.completed': {
-        const session = evt.data.object as Stripe.Checkout.Session;
-
-        // we rely on metadata.user_id set in /api/checkout
+        const session = event.data.object as Stripe.Checkout.Session;
         const user_id = session.metadata?.user_id as string | undefined;
         if (!user_id) break;
 
-        // fetch line items so we know what price was purchased
-        const items = await stripe.checkout.sessions.listLineItems(session.id, { limit: 10 });
-        const priceIds = (items.data || [])
-          .map(li => (li.price as Stripe.Price | null)?.id)
-          .filter(Boolean) as string[];
+        // Determine what was bought
+        if (session.mode === 'payment') {
+          // Fetch line items to check price id(s)
+          const items = await stripe.checkout.sessions.listLineItems(session.id, { limit: 10 });
+          const priceIds = (items.data || [])
+            .map(li => (li.price as Stripe.Price | null)?.id)
+            .filter(Boolean) as string[];
 
-        if (session.mode === 'payment' && priceIds.includes(COINS_PRICE_ID)) {
-          // +15 credits (requires simple RPC or direct SQL function)
-          await supabase.rpc('award_credits', { p_user_id: user_id, p_amount: 15, p_reason: 'coin_purchase' });
+          if (COINS_PRICE_ID && priceIds.includes(COINS_PRICE_ID)) {
+            // +15 credits for a coin pack purchase
+            await supabase.rpc('award_credits', {
+              p_user_id: user_id,
+              p_amount: 15,
+              p_reason: 'coin_purchase',
+            });
+          }
         }
 
         if (session.mode === 'subscription') {
-          // get the subscription to identify which plan
-          const subId = session.subscription as string | null;
+          const subId = extractSubIdFromSession(session);
           if (subId) {
             const sub = await stripe.subscriptions.retrieve(subId);
-            const priceId = sub.items.data[0]?.price?.id;
+            const currentPrice = sub.items.data[0]?.price?.id;
 
-            if (priceId === STARTER_PRICE_ID) {
+            if (currentPrice === STARTER_PRICE_ID) {
               await supabase.from('profiles').update({ plan: 'starter' }).eq('id', user_id);
-              await supabase.rpc('award_credits', { p_user_id: user_id, p_amount: 20, p_reason: 'starter_initial' });
-            } else if (priceId === PREMIUM_PRICE_ID) {
+              await supabase.rpc('award_credits', {
+                p_user_id: user_id,
+                p_amount: 20,
+                p_reason: 'starter_initial',
+              });
+            } else if (currentPrice === PREMIUM_PRICE_ID) {
               await supabase.from('profiles').update({ plan: 'premium' }).eq('id', user_id);
             }
           }
@@ -86,46 +124,57 @@ export async function POST(req: NextRequest) {
       }
 
       case 'invoice.payment_succeeded': {
-        // Add monthly credits for Starter, keep Premium as unlimited
-        const invoice = evt.data.object as Stripe.Invoice;
-        const subId = invoice.subscription as string | null;
+        const invoice = event.data.object as Stripe.Invoice;
+        const subId = extractSubIdFromInvoice(invoice);
         if (!subId) break;
 
         const sub = await stripe.subscriptions.retrieve(subId);
 
-        // get user_id either from subscription metadata or customer metadata
-        let user_id = sub.metadata?.user_id as string | undefined;
+        // Find user_id via subscription or customer metadata
+        let user_id = (sub.metadata?.user_id as string | undefined) || undefined;
         if (!user_id) {
-          const customer = await stripe.customers.retrieve(sub.customer as string) as Stripe.Customer;
-          user_id = customer.metadata?.user_id as string | undefined;
+          const cust = (await stripe.customers.retrieve(sub.customer as string)) as Stripe.Customer;
+          user_id = cust.metadata?.user_id as string | undefined;
         }
         if (!user_id) break;
 
-        const priceId = sub.items.data[0]?.price?.id;
-        if (priceId === STARTER_PRICE_ID) {
-          await supabase.rpc('award_credits', { p_user_id: user_id, p_amount: 20, p_reason: 'starter_renewal' });
+        const currentPrice = sub.items.data[0]?.price?.id;
+
+        if (currentPrice === STARTER_PRICE_ID) {
+          await supabase.rpc('award_credits', {
+            p_user_id: user_id,
+            p_amount: 20,
+            p_reason: 'starter_renewal',
+          });
           await supabase.from('profiles').update({ plan: 'starter' }).eq('id', user_id);
-        } else if (priceId === PREMIUM_PRICE_ID) {
+        } else if (currentPrice === PREMIUM_PRICE_ID) {
           await supabase.from('profiles').update({ plan: 'premium' }).eq('id', user_id);
         }
         break;
       }
 
       case 'customer.subscription.deleted': {
-        const sub = evt.data.object as Stripe.Subscription;
-        const customer = await stripe.customers.retrieve(sub.customer as string) as Stripe.Customer;
-        const user_id = customer.metadata?.user_id as string | undefined;
+        const sub = event.data.object as Stripe.Subscription;
+        const cust = (await stripe.customers.retrieve(sub.customer as string)) as Stripe.Customer;
+        const user_id = cust.metadata?.user_id as string | undefined;
         if (user_id) {
           await supabase.from('profiles').update({ plan: 'free' }).eq('id', user_id);
         }
         break;
       }
+
+      default:
+        // ignore other events
+        break;
     }
 
-    await markHandled(evt.id);
+    // Mark handled (idempotency)
+    await supabase.from('stripe_events').insert({ id: event.id });
+
     return NextResponse.json({ received: true });
-  } catch (e: any) {
-    console.error('Webhook handler failed:', e?.message);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('Webhook handler failed:', msg);
     return NextResponse.json({ error: 'Webhook handler failed' }, { status: 500 });
   }
 }
