@@ -76,7 +76,7 @@ async function createSession(req: Request, planKey: string) {
 
   if (!def.priceId) {
     return { error: NextResponse.json({ error: 'Plan is missing Stripe priceId' }, { status: 500 }) };
-    }
+  }
 
   const customerId = await ensureStripeCustomer({
     supabase,

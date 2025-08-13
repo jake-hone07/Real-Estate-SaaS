@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
+import { STARTER_MONTHLY_CREDITS, COINS_TOPUP_CREDITS } from '@/lib/billing';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,20 +23,12 @@ const admin = createClient(
   anyEnv('SUPABASE_SERVICE_ROLE_KEY')
 );
 
-// credits per plan key (adjust as needed)
-const PLAN_CREDITS: Record<string, number> = {
-  Starter: 50,
-  Premium: 200,
-};
-
-async function grantCredits(userId: string, planKey: string, invoiceId?: string) {
-  const credits = PLAN_CREDITS[planKey] ?? 0;
-  if (!credits) return;
-
+async function grantCredits(userId: string, amount: number, reason: string, invoiceId?: string) {
+  if (!amount) return;
   const { error } = await admin.from('credits_ledger').insert({
     user_id: userId,
-    delta: credits,
-    reason: `purchase:${planKey}`,
+    delta: amount,
+    reason,
     stripe_invoice_id: invoiceId ?? null,
   });
   if (error) console.error('[webhook] grantCredits error:', error.message);
@@ -63,32 +56,36 @@ export async function POST(req: Request) {
       case 'checkout.session.completed': {
         const s = event.data.object as Stripe.Checkout.Session;
         const userId = s.metadata?.supabase_user_id;
-        const planKey = s.metadata?.plan_key;
+        const planKey = s.metadata?.plan_key; // 'Starter' | 'Premium' | 'Coins'
         if (!userId || !planKey) break;
 
-        await admin.from('profiles').update({ plan_key: planKey }).eq('id', userId);
+        if (s.mode === 'payment' && planKey === 'Coins') {
+          // 1) Top-up purchase: grant instantly; do NOT change plan
+          await grantCredits(userId, COINS_TOPUP_CREDITS, 'purchase:Coins', (s.invoice as string) ?? undefined);
+        } else if (s.mode === 'subscription') {
+          // 2) Subscriptions: set plan on profile
+          await admin.from('profiles').update({ plan_key: planKey }).eq('id', userId);
 
-        if (s.mode === 'payment') {
-          await grantCredits(userId, planKey, (s.invoice as string) ?? undefined);
-        }
-
-        if (s.mode === 'subscription' && s.subscription) {
-          const subId =
-            typeof s.subscription === 'string' ? s.subscription : s.subscription.id;
-          await admin.from('subscriptions').upsert(
-            {
-              user_id: userId,
-              stripe_subscription_id: subId,
-              plan_key: planKey,
-              status: 'active',
-            },
-            { onConflict: 'stripe_subscription_id' }
-          );
+          // Starter could optionally get an initial grant here; we keep it to invoice.paid
+          // Add a subscriptions row linkage right away
+          if (s.subscription) {
+            const subId = typeof s.subscription === 'string' ? s.subscription : s.subscription.id;
+            await admin.from('subscriptions').upsert(
+              {
+                user_id: userId,
+                stripe_subscription_id: subId,
+                plan_key: planKey,
+                status: 'active',
+              },
+              { onConflict: 'stripe_subscription_id' }
+            );
+          }
         }
         break;
       }
 
       case 'invoice.paid': {
+        // Recurring monthly grants for Starter only
         const invoice = event.data.object as Stripe.Invoice;
         const subId = (invoice as any).subscription as string | null | undefined;
         if (!subId) break;
@@ -99,9 +96,10 @@ export async function POST(req: Request) {
           .eq('stripe_subscription_id', subId)
           .maybeSingle();
 
-        if (subRow?.user_id && subRow?.plan_key) {
-          await grantCredits(subRow.user_id, subRow.plan_key, invoice.id);
+        if (subRow?.user_id && subRow?.plan_key === 'Starter') {
+          await grantCredits(subRow.user_id, STARTER_MONTHLY_CREDITS, 'monthly:Starter', invoice.id);
         }
+        // Premium gets no credits (unlimited handled by rate limits)
         break;
       }
 
@@ -130,9 +128,7 @@ export async function POST(req: Request) {
         if (planKey) payload.plan_key = planKey;
         if (cpeIso) payload.current_period_end = cpeIso;
 
-        await admin
-          .from('subscriptions')
-          .upsert(payload, { onConflict: 'stripe_subscription_id' });
+        await admin.from('subscriptions').upsert(payload, { onConflict: 'stripe_subscription_id' });
 
         if (planKey) {
           await admin.from('profiles').update({ plan_key: planKey }).eq('id', userId);

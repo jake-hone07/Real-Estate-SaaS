@@ -1,18 +1,17 @@
 // lib/billing.ts
-// Single source of truth for plans/pricing used by Checkout, UI, and Webhooks.
-// Reads Stripe Price IDs from your env (STARTER_PRICE_ID, PREMIUM_PRICE_ID, …).
+// Source of truth for plans and price IDs. Uses your env names.
 
 export type PlanMode = 'subscription' | 'payment';
 
 export type PlanDef = {
   name: string;          // Display name
-  credits: number;       // Credits granted per purchase/billing cycle
+  credits: number;       // Credits granted per purchase/billing cycle (0 for Premium/unlimited)
   priceId: string;       // Stripe Price ID (price_...)
   priceLabel: string;    // UI label (e.g., "$9", "$29/mo")
   mode: PlanMode;        // 'payment' (one-time) or 'subscription'
 };
 
-export type PlanKey = 'Starter' | 'Premium'; // extend as needed
+export type PlanKey = 'Starter' | 'Premium' | 'Coins';
 
 function anyEnv(...names: string[]): string {
   for (const n of names) {
@@ -22,21 +21,33 @@ function anyEnv(...names: string[]): string {
   throw new Error(`Missing environment variable: one of [${names.join(', ')}]`);
 }
 
+// ===== Pricing & credit amounts =====
+export const STARTER_MONTHLY_CREDITS = 25;     // ← your chosen Starter amount
+export const COINS_TOPUP_CREDITS = 15;         // ← top-up credits
+// Premium is unlimited (no monthly credits)
+
+// ===== Plans =====
 const INTERNAL_PLANS: Record<PlanKey, PlanDef> = {
   Starter: {
     name: 'Starter',
-    credits: 50,
-    // Primary: STARTER_PRICE_ID. Fallbacks allow NEXT_PUBLIC_* if you ever reference it client-side.
+    credits: STARTER_MONTHLY_CREDITS,
     priceId: anyEnv('STARTER_PRICE_ID', 'NEXT_PUBLIC_STARTER_PRICE_ID'),
-    priceLabel: '$9',
-    mode: 'payment',
+    priceLabel: '$9/mo',
+    mode: 'subscription',
   },
   Premium: {
     name: 'Premium',
-    credits: 200,
+    credits: 0, // unlimited (no monthly grant)
     priceId: anyEnv('PREMIUM_PRICE_ID', 'NEXT_PUBLIC_PREMIUM_PRICE_ID'),
     priceLabel: '$29/mo',
     mode: 'subscription',
+  },
+  Coins: {
+    name: 'Top-Up (15 credits)',
+    credits: COINS_TOPUP_CREDITS,
+    priceId: anyEnv('COINS_PRICE_ID', 'NEXT_PUBLIC_COINS_PRICE_ID'),
+    priceLabel: '$10 one-time',
+    mode: 'payment',
   },
 };
 
@@ -69,5 +80,5 @@ export function listPlans(): Array<{ key: PlanKey; name: string; priceLabel: str
 
 /* ---------- Back-compat exports (if other files import these) ---------- */
 export const PLANS: Record<PlanKey, PlanDef> = INTERNAL_PLANS;
-export const DISPLAY_ORDER: PlanKey[] = ['Starter', 'Premium'];
+export const DISPLAY_ORDER: PlanKey[] = ['Starter', 'Premium', 'Coins'];
 /* --------------------------------------------------------------------- */

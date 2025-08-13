@@ -102,7 +102,7 @@ async function createSession(req: Request, planKey: string) {
     automatic_tax: { enabled: false },
     metadata: {
       supabase_user_id: user.id,
-      plan_key: key,
+      plan_key: key,     // 'Starter' | 'Premium' | 'Coins'
       plan_name: def.name,
     },
   });
