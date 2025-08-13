@@ -1,4 +1,4 @@
-// app/billing/portal/route.ts
+// app/portal/route.ts
 import { NextResponse } from 'next/server';
 export const runtime = 'nodejs';
 

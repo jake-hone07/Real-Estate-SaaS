@@ -1,3 +1,4 @@
+// app/billing/page.tsx
 import { cookies } from 'next/headers';
 import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
 import { listPlans } from '@/lib/billing';
@@ -9,6 +10,7 @@ type ProfileRow = { plan_key: string | null };
 export default async function BillingPage() {
   const supabase = createServerComponentClient<any>({ cookies });
 
+  // Auth
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -22,46 +24,31 @@ export default async function BillingPage() {
     );
   }
 
+  // Profile (plan)
   const { data: profile } = await supabase
     .from('profiles')
     .select('plan_key')
     .eq('id', user.id)
     .maybeSingle<ProfileRow>();
 
-  // Source A: credits_balance view (if present)
-  let viewBalance: number | null = null;
-  try {
-    const { data: v } = await supabase
-      .from('credits_balance')
-      .select('balance')
-      .eq('user_id', user.id)
-      .maybeSingle<{ balance: number | null }>();
-    if (v && typeof v.balance === 'number' && !Number.isNaN(v.balance)) {
-      viewBalance = v.balance;
-    }
-  } catch {}
+  // Credits: compute from ledger to avoid view/policy mismatches
+  // SELECT sum(delta) AS balance FROM credits_ledger WHERE user_id = ...
+  const { data: sumRow } = await supabase
+    .from('credits_ledger')
+    .select('balance:sum(delta)')
+    .eq('user_id', user.id)
+    .single<{ balance: number | null }>();
 
-  // Source B: sum(delta) from ledger
-  let ledgerBalance = 0;
-  try {
-    const { data: s } = await supabase
-      .from('credits_ledger')
-      .select('total:sum(delta)')
-      .eq('user_id', user.id)
-      .single<{ total: number | null }>();
-    ledgerBalance = s?.total ?? 0;
-  } catch {}
-
-  const credits = (viewBalance ?? ledgerBalance ?? 0) as number;
   const plan = profile?.plan_key ?? 'None';
+  const creditsComputed = sumRow?.balance ?? 0;
+
   const plans = listPlans();
 
   return (
     <main className="mx-auto max-w-3xl p-6">
       <h1 className="text-2xl font-semibold">Billing</h1>
-      <div className="mt-2 text-xs text-gray-500">debug — view: {viewBalance ?? 'n/a'} • ledger: {ledgerBalance}</div>
 
-      <section className="mt-3 rounded-2xl border p-5">
+      <section className="mt-6 rounded-2xl border p-5">
         <div className="flex items-center justify-between">
           <div>
             <div className="text-sm text-gray-500">Current Plan</div>
@@ -72,31 +59,24 @@ export default async function BillingPage() {
           <div className="text-right">
             <div className="text-sm text-gray-500">Credits</div>
             <div className="mt-1 text-lg font-semibold">
-              {plan === 'Premium' ? 'Unlimited' : credits}
+              {plan === 'Premium' ? 'Unlimited' : creditsComputed}
             </div>
           </div>
         </div>
 
-        <div className="mt-5 flex flex-wrap gap-3 items-center">
-          <a href="/api/billing/portal" className="rounded-lg border px-4 py-2 text-sm hover:bg-gray-50">
+        <div className="mt-5 flex flex-wrap gap-3">
+          <a
+            href="/billing/portal"
+            className="rounded-lg border px-4 py-2 text-sm hover:bg-gray-50"
+          >
             Manage Billing
           </a>
-          <a href="/api/checkout?planKey=Coins" className="rounded-lg border px-4 py-2 text-sm hover:bg-gray-50">
+          <a
+            href="/api/checkout?planKey=Coins"
+            className="rounded-lg border px-4 py-2 text-sm hover:bg-gray-50"
+          >
             Buy Top-Up (15 credits)
           </a>
-
-          {/* Only show the sync button if user has no plan AND 0 credits */}
-          {plan === 'None' && credits === 0 && (
-            <form action="/api/credits/grant-initial" method="post">
-              <button
-                type="submit"
-                className="rounded-lg border px-4 py-2 text-sm hover:bg-gray-50"
-                title="One-time sync to seed your ledger with the 4 free demo credits."
-              >
-                Sync free credits (4)
-              </button>
-            </form>
-          )}
         </div>
       </section>
 
