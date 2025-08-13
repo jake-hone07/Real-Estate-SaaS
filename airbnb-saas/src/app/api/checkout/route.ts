@@ -20,7 +20,6 @@ function absUrl(req: Request, path: string) {
   return new URL(path, new URL(req.url).origin).toString();
 }
 
-// Initialize Stripe (no apiVersion literal to avoid type pinning issues)
 const stripe = new Stripe(mustEnv('STRIPE_SECRET_KEY'));
 
 type PlanDef = {
@@ -68,7 +67,6 @@ async function ensureStripeCustomer(opts: {
     .eq('id', userId);
 
   if (upErr) {
-    // If no profile row existed, best-effort upsert it
     const { error: upsertErr } = await supabase
       .from('profiles')
       .upsert({ id: userId, stripe_customer_id: created.id }, { onConflict: 'id' });
@@ -78,56 +76,86 @@ async function ensureStripeCustomer(opts: {
   return created.id;
 }
 
+async function createSession(req: Request, planKey: string) {
+  const supabase = createRouteHandlerClient<any>({ cookies });
+  const { data: auth } = await supabase.auth.getUser();
+  const user = auth?.user;
+  if (!user) return { error: NextResponse.json({ error: 'Not authenticated' }, { status: 401 }) };
+
+  const planResult = getPlan(planKey) as PlanResult | null | undefined;
+  if (!planResult?.def) {
+    return { error: NextResponse.json({ error: 'Invalid plan' }, { status: 400 }) };
+  }
+  const { key, def } = planResult;
+  if (!def.priceId || (def.mode !== 'subscription' && def.mode !== 'payment')) {
+    return { error: NextResponse.json({ error: 'Plan misconfigured' }, { status: 500 }) };
+  }
+
+  const customerId = await ensureStripeCustomer({
+    supabase,
+    userId: user.id,
+    email: user.email ?? undefined,
+  });
+
+  const successUrl = absUrl(req, '/billing?checkout=success');
+  const cancelUrl = absUrl(req, '/billing?checkout=canceled');
+
+  const session = await stripe.checkout.sessions.create({
+    mode: def.mode,
+    customer: customerId,
+    line_items: [{ price: def.priceId, quantity: 1 }],
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    allow_promotion_codes: true,
+    automatic_tax: { enabled: false },
+    metadata: {
+      supabase_user_id: user.id,
+      plan_key: key,
+      plan_name: def.name,
+    },
+  });
+
+  return { session };
+}
+
+// ---------- POST: JSON body { planKey } → { id, url } (kept for API usage) ----------
 export async function POST(req: Request) {
   try {
-    const supabase = createRouteHandlerClient<any>({ cookies });
-    const { data: auth } = await supabase.auth.getUser();
-    const user = auth?.user;
-    if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-
-    let body: Body | null = null;
-    try {
-      body = (await req.json()) as Body;
-    } catch {
-      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    const body = (await req.json().catch(() => null)) as Body | null;
+    const planKey = body?.planKey;
+    if (!planKey) {
+      return NextResponse.json({ error: 'Missing planKey' }, { status: 400 });
     }
 
-    const planResult = getPlan(body?.planKey) as PlanResult | null | undefined;
-    if (!planResult?.def) {
-      return NextResponse.json({ error: 'Invalid plan' }, { status: 400 });
-    }
-    const { key: planKey, def } = planResult;
-    if (!def.priceId || (def.mode !== 'subscription' && def.mode !== 'payment')) {
-      return NextResponse.json({ error: 'Plan misconfigured' }, { status: 500 });
-    }
+    const { error, session } = await createSession(req, planKey);
+    if (error) return error;
 
-    const customerId = await ensureStripeCustomer({
-      supabase,
-      userId: user.id,
-      email: user.email ?? undefined,
-    });
-
-    const successUrl = absUrl(req, '/billing?checkout=success');
-    const cancelUrl = absUrl(req, '/billing?checkout=canceled');
-
-    const session = await stripe.checkout.sessions.create({
-      mode: def.mode,
-      customer: customerId,
-      line_items: [{ price: def.priceId, quantity: 1 }],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      allow_promotion_codes: true,
-      automatic_tax: { enabled: false },
-      metadata: {
-        supabase_user_id: user.id,
-        plan_key: planKey,
-        plan_name: def.name,
-      },
-    });
-
-    return NextResponse.json({ id: session.id, url: session.url }, { status: 200 });
+    return NextResponse.json({ id: session!.id, url: session!.url }, { status: 200 });
   } catch (e: any) {
-    console.error('[checkout] error:', e?.message || e);
+    console.error('[checkout POST] error:', e?.message || e);
+    return NextResponse.json(
+      { error: 'Unexpected error creating checkout session.' },
+      { status: 500 }
+    );
+  }
+}
+
+// ---------- GET: /api/checkout?planKey=Starter → 302 redirect to Stripe ----------
+export async function GET(req: Request) {
+  try {
+    const url = new URL(req.url);
+    const planKey = url.searchParams.get('planKey') || undefined;
+    if (!planKey) {
+      return NextResponse.json({ error: 'Missing planKey' }, { status: 400 });
+    }
+
+    const { error, session } = await createSession(req, planKey);
+    if (error) return error;
+
+    // Redirect the browser directly to Stripe
+    return NextResponse.redirect(session!.url!, { status: 302 });
+  } catch (e: any) {
+    console.error('[checkout GET] error:', e?.message || e);
     return NextResponse.json(
       { error: 'Unexpected error creating checkout session.' },
       { status: 500 }

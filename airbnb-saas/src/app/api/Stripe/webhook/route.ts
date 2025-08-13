@@ -1,8 +1,7 @@
 // app/api/stripe/webhook/route.ts
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import Stripe from 'stripe';
+import { createClient } from '@supabase/supabase-js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic'; // never cache webhooks
@@ -15,22 +14,23 @@ function mustEnv(name: string): string {
 
 const stripe = new Stripe(mustEnv('STRIPE_SECRET_KEY'));
 
+// Admin (service-role) client since webhooks run without a user session
+const admin = createClient(
+  mustEnv('NEXT_PUBLIC_SUPABASE_URL'),
+  mustEnv('SUPABASE_SERVICE_ROLE_KEY')
+);
+
 // credits per plan key (adjust to your plans)
 const PLAN_CREDITS: Record<string, number> = {
   Starter: 50,
   Premium: 200,
 };
 
-async function grantCredits(
-  supabase: ReturnType<typeof createRouteHandlerClient<any>>,
-  userId: string,
-  planKey: string,
-  invoiceId?: string
-) {
+async function grantCredits(userId: string, planKey: string, invoiceId?: string) {
   const credits = PLAN_CREDITS[planKey] ?? 0;
   if (!credits) return;
 
-  const { error } = await supabase.from('credits_ledger').insert({
+  const { error } = await admin.from('credits_ledger').insert({
     user_id: userId,
     delta: credits,
     reason: `purchase:${planKey}`,
@@ -40,9 +40,7 @@ async function grantCredits(
 }
 
 export async function POST(req: Request) {
-  const supabase = createRouteHandlerClient<any>({ cookies });
-
-  // --- Signature (fix: read from req.headers directly) ---
+  // --- Signature ---
   const sig = req.headers.get('stripe-signature');
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!sig || !secret) {
@@ -69,23 +67,23 @@ export async function POST(req: Request) {
         if (!userId || !planKey) break;
 
         // mirror plan to profile (optional for one-time)
-        await supabase.from('profiles').update({ plan_key: planKey }).eq('id', userId);
+        await admin.from('profiles').update({ plan_key: planKey }).eq('id', userId);
 
         // one-time: grant immediately
         if (s.mode === 'payment') {
-          await grantCredits(supabase, userId, planKey, (s.invoice as string) ?? undefined);
+          await grantCredits(userId, planKey, (s.invoice as string) ?? undefined);
         }
 
         // subscription: persist sub mapping
         if (s.mode === 'subscription' && s.subscription) {
           const subId =
             typeof s.subscription === 'string' ? s.subscription : s.subscription.id;
-          await supabase.from('subscriptions').upsert(
+          await admin.from('subscriptions').upsert(
             {
               user_id: userId,
               stripe_subscription_id: subId,
               plan_key: planKey,
-              status: 'active', // will be corrected by sub.updated
+              status: 'active', // corrected by sub.updated
             },
             { onConflict: 'stripe_subscription_id' }
           );
@@ -94,19 +92,19 @@ export async function POST(req: Request) {
       }
 
       case 'invoice.paid': {
-        // NOTE: typings can vary; cast to any to access subscription id safely
+        // Recurring credit top-ups for subscriptions
         const invoice = event.data.object as Stripe.Invoice;
         const subId = (invoice as any).subscription as string | null | undefined;
         if (!subId) break;
 
-        const { data: subRow } = await supabase
+        const { data: subRow } = await admin
           .from('subscriptions')
           .select('user_id, plan_key')
           .eq('stripe_subscription_id', subId)
           .maybeSingle();
 
         if (subRow?.user_id && subRow?.plan_key) {
-          await grantCredits(supabase, subRow.user_id, subRow.plan_key, invoice.id);
+          await grantCredits(subRow.user_id, subRow.plan_key, invoice.id);
         }
         break;
       }
@@ -130,7 +128,7 @@ export async function POST(req: Request) {
         // plan key (if you attach metadata on price/subscription)
         const planKey = (sub.metadata?.plan_key as string | undefined) ?? undefined;
 
-        // NOTE: some Stripe typings differ on current_period_end; cast defensively
+        // normalize current period end
         const cpeUnix = (sub as any).current_period_end as number | undefined;
         const cpeIso = cpeUnix ? new Date(cpeUnix * 1000).toISOString() : null;
 
@@ -142,18 +140,18 @@ export async function POST(req: Request) {
         if (planKey) payload.plan_key = planKey;
         if (cpeIso) payload.current_period_end = cpeIso;
 
-        await supabase
+        await admin
           .from('subscriptions')
           .upsert(payload, { onConflict: 'stripe_subscription_id' });
 
         if (planKey) {
-          await supabase.from('profiles').update({ plan_key: planKey }).eq('id', userId);
+          await admin.from('profiles').update({ plan_key: planKey }).eq('id', userId);
         }
         break;
       }
 
       default:
-        // no-op for other events
+        // no-op
         break;
     }
 

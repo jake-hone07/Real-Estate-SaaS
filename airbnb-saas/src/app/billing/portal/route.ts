@@ -13,10 +13,10 @@ function mustEnv(name: string): string {
 }
 const stripe = new Stripe(mustEnv('STRIPE_SECRET_KEY'));
 
-export async function POST() {
+async function createPortalUrl() {
   const supabase = createRouteHandlerClient<any>({ cookies });
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!user) return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
 
   const { data: profile } = await supabase
     .from('profiles')
@@ -25,7 +25,7 @@ export async function POST() {
     .maybeSingle();
 
   if (!profile?.stripe_customer_id) {
-    return NextResponse.json({ error: 'No Stripe customer' }, { status: 400 });
+    return { error: NextResponse.json({ error: 'No Stripe customer' }, { status: 400 }) };
   }
 
   const session = await stripe.billingPortal.sessions.create({
@@ -36,5 +36,29 @@ export async function POST() {
         : 'http://localhost:3000/billing',
   });
 
-  return NextResponse.json({ url: session.url });
+  return { url: session.url };
+}
+
+// POST: returns JSON { url }
+export async function POST() {
+  try {
+    const { error, url } = await createPortalUrl();
+    if (error) return error;
+    return NextResponse.json({ url }, { status: 200 });
+  } catch (e: any) {
+    console.error('[portal POST] error:', e?.message || e);
+    return NextResponse.json({ error: 'Portal error' }, { status: 500 });
+  }
+}
+
+// GET: redirects directly to portal URL
+export async function GET() {
+  try {
+    const { error, url } = await createPortalUrl();
+    if (error) return error;
+    return NextResponse.redirect(url!, { status: 302 });
+  } catch (e: any) {
+    console.error('[portal GET] error:', e?.message || e);
+    return NextResponse.json({ error: 'Portal error' }, { status: 500 });
+  }
 }

@@ -6,8 +6,9 @@
  * and redirects the browser to the hosted checkout page.
  *
  * Usage (in a client component):
- *   import { startCheckout } from '@/lib/client/stripe';
+ *   import { startCheckout, openBillingPortal } from '@/lib/client/stripe';
  *   <button onClick={() => startCheckout('Starter')}>Buy</button>
+ *   <button onClick={openBillingPortal}>Manage Billing</button>
  */
 
 let inFlight = false;
@@ -25,7 +26,6 @@ export async function startCheckout(planKey: string): Promise<void> {
       body: JSON.stringify({ planKey }),
     });
 
-    // Try to parse JSON even on error to surface server message
     const data = await res
       .json()
       .catch(() => ({} as { url?: string; error?: string }));
@@ -33,25 +33,14 @@ export async function startCheckout(planKey: string): Promise<void> {
     if (!res.ok) {
       throw new Error(data?.error || `Checkout failed (${res.status})`);
     }
+    if (!data?.url) throw new Error('No checkout URL returned from server');
 
-    if (!data?.url) {
-      throw new Error('No checkout URL returned from server');
-    }
-
-    // Redirect to Stripe
     window.location.href = data.url as string;
   } finally {
     inFlight = false;
   }
 }
 
-/**
- * Opens the Stripe Billing Portal for the current user (if you wired /api/billing/portal).
- *
- * Usage:
- *   import { openBillingPortal } from '@/lib/client/stripe';
- *   <button onClick={openBillingPortal}>Manage Billing</button>
- */
 export async function openBillingPortal(): Promise<void> {
   if (inFlight) return;
   inFlight = true;
@@ -70,10 +59,7 @@ export async function openBillingPortal(): Promise<void> {
     if (!res.ok) {
       throw new Error(data?.error || `Portal failed (${res.status})`);
     }
-
-    if (!data?.url) {
-      throw new Error('No portal URL returned from server');
-    }
+    if (!data?.url) throw new Error('No portal URL returned from server');
 
     window.location.href = data.url as string;
   } finally {
