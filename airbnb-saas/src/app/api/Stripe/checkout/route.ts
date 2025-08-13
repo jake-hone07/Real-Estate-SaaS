@@ -1,5 +1,5 @@
 // app/api/stripe/checkout/route.ts
-// Some code paths in your repo still hit this endpoint. This file mirrors /api/checkout.
+// Compatibility endpoint mirroring /api/checkout (some code paths may still call this)
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
@@ -21,15 +21,6 @@ function absUrl(req: Request, path: string) {
 
 const stripe = new Stripe(mustEnv('STRIPE_SECRET_KEY'));
 
-type PlanDef = {
-  name: string;
-  credits: number;
-  priceId: string;
-  priceLabel: string;
-  mode: 'subscription' | 'payment';
-};
-type PlanResult = { key: string; def: PlanDef };
-
 async function ensureStripeCustomer(opts: {
   supabase: ReturnType<typeof createRouteHandlerClient<any>>;
   userId: string;
@@ -49,7 +40,7 @@ async function ensureStripeCustomer(opts: {
       await stripe.customers.retrieve(existing);
       return existing;
     } catch {
-      // fall through to recreate
+      // recreate
     }
   }
 
@@ -58,7 +49,6 @@ async function ensureStripeCustomer(opts: {
     metadata: { supabase_user_id: userId },
   });
 
-  // best-effort persist
   const { error: upErr } = await supabase
     .from('profiles')
     .update({ stripe_customer_id: created.id })
@@ -78,11 +68,15 @@ async function createSession(req: Request, planKey: string) {
   const user = auth?.user;
   if (!user) return { error: NextResponse.json({ error: 'Not authenticated' }, { status: 401 }) };
 
-  const planResult = getPlan(planKey) as PlanResult | null | undefined;
+  const planResult = getPlan(planKey);
   if (!planResult?.def) {
     return { error: NextResponse.json({ error: 'Invalid plan' }, { status: 400 }) };
   }
   const { key, def } = planResult;
+
+  if (!def.priceId) {
+    return { error: NextResponse.json({ error: 'Plan is missing Stripe priceId' }, { status: 500 }) };
+  }
 
   const customerId = await ensureStripeCustomer({
     supabase,
@@ -111,7 +105,6 @@ async function createSession(req: Request, planKey: string) {
   return { session };
 }
 
-// Keep POST (JSON) and GET (redirect) for compatibility with both patterns.
 export async function POST(req: Request) {
   try {
     const body = (await req.json().catch(() => null)) as { planKey?: string } | null;
@@ -120,7 +113,6 @@ export async function POST(req: Request) {
 
     const { error, session } = await createSession(req, planKey);
     if (error) return error;
-
     return NextResponse.json({ id: session!.id, url: session!.url }, { status: 200 });
   } catch (e: any) {
     console.error('[stripe/checkout POST] error:', e?.message || e);
@@ -136,7 +128,6 @@ export async function GET(req: Request) {
 
     const { error, session } = await createSession(req, planKey);
     if (error) return error;
-
     return NextResponse.redirect(session!.url!, { status: 302 });
   } catch (e: any) {
     console.error('[stripe/checkout GET] error:', e?.message || e);

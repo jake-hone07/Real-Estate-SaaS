@@ -22,14 +22,6 @@ function absUrl(req: Request, path: string) {
 
 const stripe = new Stripe(mustEnv('STRIPE_SECRET_KEY'));
 
-type PlanDef = {
-  name: string;
-  credits: number;
-  priceId: string;
-  priceLabel: string;
-  mode: 'subscription' | 'payment';
-};
-type PlanResult = { key: string; def: PlanDef };
 type Body = { planKey?: string };
 
 async function ensureStripeCustomer(opts: {
@@ -82,13 +74,15 @@ async function createSession(req: Request, planKey: string) {
   const user = auth?.user;
   if (!user) return { error: NextResponse.json({ error: 'Not authenticated' }, { status: 401 }) };
 
-  const planResult = getPlan(planKey) as PlanResult | null | undefined;
+  const planResult = getPlan(planKey);
   if (!planResult?.def) {
     return { error: NextResponse.json({ error: 'Invalid plan' }, { status: 400 }) };
   }
   const { key, def } = planResult;
-  if (!def.priceId || (def.mode !== 'subscription' && def.mode !== 'payment')) {
-    return { error: NextResponse.json({ error: 'Plan misconfigured' }, { status: 500 }) };
+
+  // Defensive: ensure priceId exists (pulled from env in lib/billing.ts)
+  if (!def.priceId) {
+    return { error: NextResponse.json({ error: 'Plan is missing Stripe priceId' }, { status: 500 }) };
   }
 
   const customerId = await ensureStripeCustomer({
@@ -101,7 +95,7 @@ async function createSession(req: Request, planKey: string) {
   const cancelUrl = absUrl(req, '/billing?checkout=canceled');
 
   const session = await stripe.checkout.sessions.create({
-    mode: def.mode,
+    mode: def.mode, // 'payment' | 'subscription'
     customer: customerId,
     line_items: [{ price: def.priceId, quantity: 1 }],
     success_url: successUrl,
@@ -118,18 +112,15 @@ async function createSession(req: Request, planKey: string) {
   return { session };
 }
 
-// ---------- POST: JSON body { planKey } → { id, url } (kept for API usage) ----------
+// POST: JSON { planKey } → { id, url }
 export async function POST(req: Request) {
   try {
     const body = (await req.json().catch(() => null)) as Body | null;
     const planKey = body?.planKey;
-    if (!planKey) {
-      return NextResponse.json({ error: 'Missing planKey' }, { status: 400 });
-    }
+    if (!planKey) return NextResponse.json({ error: 'Missing planKey' }, { status: 400 });
 
     const { error, session } = await createSession(req, planKey);
     if (error) return error;
-
     return NextResponse.json({ id: session!.id, url: session!.url }, { status: 200 });
   } catch (e: any) {
     console.error('[checkout POST] error:', e?.message || e);
@@ -140,19 +131,15 @@ export async function POST(req: Request) {
   }
 }
 
-// ---------- GET: /api/checkout?planKey=Starter → 302 redirect to Stripe ----------
+// GET: /api/checkout?planKey=Starter → 302 redirect to Stripe
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const planKey = url.searchParams.get('planKey') || undefined;
-    if (!planKey) {
-      return NextResponse.json({ error: 'Missing planKey' }, { status: 400 });
-    }
+    if (!planKey) return NextResponse.json({ error: 'Missing planKey' }, { status: 400 });
 
     const { error, session } = await createSession(req, planKey);
     if (error) return error;
-
-    // Redirect the browser directly to Stripe
     return NextResponse.redirect(session!.url!, { status: 302 });
   } catch (e: any) {
     console.error('[checkout GET] error:', e?.message || e);

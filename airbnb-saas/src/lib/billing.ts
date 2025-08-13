@@ -1,5 +1,6 @@
 // lib/billing.ts
 // Single source of truth for plans/pricing used by Checkout, UI, and Webhooks.
+// Reads Stripe Price IDs from environment variables so you don't hardcode them.
 
 export type PlanMode = 'subscription' | 'payment';
 
@@ -13,24 +14,39 @@ export type PlanDef = {
 
 export type PlanKey = 'Starter' | 'Premium'; // extend as needed
 
-// ====== UPDATE THESE PRICE IDS ======
+function mustEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) {
+    // Throwing here is OK because this module is used server-side only.
+    // It will surface clearly in logs/build if any required env is missing.
+    throw new Error(`Missing environment variable: ${name}`);
+  }
+  return v;
+}
+
+/**
+ * All plans are read from env, so be sure these are defined in Vercel:
+ *  - STRIPE_STARTER_PRICE_ID
+ *  - STRIPE_PREMIUM_PRICE_ID
+ *
+ * You can also change credits/labels/modes here without touching routes.
+ */
 const INTERNAL_PLANS: Record<PlanKey, PlanDef> = {
   Starter: {
     name: 'Starter',
     credits: 50,
-    priceId: 'price_STARTER_REPLACE_ME', // <-- put your real Stripe Price ID
+    priceId: mustEnv('STRIPE_STARTER_PRICE_ID'),
     priceLabel: '$9',
     mode: 'payment',
   },
   Premium: {
     name: 'Premium',
     credits: 200,
-    priceId: 'price_PREMIUM_REPLACE_ME', // <-- put your real Stripe Price ID
+    priceId: mustEnv('STRIPE_PREMIUM_PRICE_ID'),
     priceLabel: '$29/mo',
     mode: 'subscription',
   },
 };
-// ====================================
 
 // Preferred exports
 export const ALL_PLANS: ReadonlyArray<{ key: PlanKey; def: PlanDef }> = (
@@ -59,9 +75,7 @@ export function listPlans(): Array<{ key: PlanKey; name: string; priceLabel: str
   });
 }
 
-/* ---------------- Backward-compat exports (to satisfy older imports) ---------------- */
-// Some existing files may import { PLANS, DISPLAY_ORDER }.
-// Keep these to avoid build errors; they simply mirror the structure above.
+/* ---------- Backward-compat exports (for any existing imports in your repo) ---------- */
 export const PLANS: Record<PlanKey, PlanDef> = INTERNAL_PLANS;
 export const DISPLAY_ORDER: PlanKey[] = ['Starter', 'Premium'];
 /* ------------------------------------------------------------------------------------ */
