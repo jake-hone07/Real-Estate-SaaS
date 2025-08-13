@@ -4,23 +4,25 @@ import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 
 export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic'; // never cache webhooks
+export const dynamic = 'force-dynamic';
 
-function mustEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
+function anyEnv(...names: string[]): string {
+  for (const n of names) {
+    const v = process.env[n];
+    if (v && v.trim() !== '') return v.trim();
+  }
+  throw new Error(`Missing env: one of [${names.join(', ')}]`);
 }
 
-const stripe = new Stripe(mustEnv('STRIPE_SECRET_KEY'));
+const stripe = new Stripe(anyEnv('STRIPE_SECRET_KEY'));
 
-// Admin (service-role) client since webhooks run without a user session
+// Service-role client (bypasses RLS). Prefer SUPABASE_URL if present.
 const admin = createClient(
-  mustEnv('NEXT_PUBLIC_SUPABASE_URL'),
-  mustEnv('SUPABASE_SERVICE_ROLE_KEY')
+  anyEnv('SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'XT_PUBLIC_SUPABASE_URL'),
+  anyEnv('SUPABASE_SERVICE_ROLE_KEY')
 );
 
-// credits per plan key (adjust to your plans)
+// credits per plan key (adjust as needed)
 const PLAN_CREDITS: Record<string, number> = {
   Starter: 50,
   Premium: 200,
@@ -40,15 +42,13 @@ async function grantCredits(userId: string, planKey: string, invoiceId?: string)
 }
 
 export async function POST(req: Request) {
-  // --- Signature ---
   const sig = req.headers.get('stripe-signature');
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!sig || !secret) {
-    console.error('[webhook] missing signature or STRIPE_WEBHOOK_SECRET');
+  const secret = anyEnv('STRIPE_WEBHOOK_SECRET');
+  if (!sig) {
+    console.error('[webhook] missing signature');
     return NextResponse.json({ received: true }, { status: 400 });
   }
 
-  // --- Construct event with raw body ---
   let event: Stripe.Event;
   try {
     const raw = await req.text();
@@ -66,15 +66,12 @@ export async function POST(req: Request) {
         const planKey = s.metadata?.plan_key;
         if (!userId || !planKey) break;
 
-        // mirror plan to profile (optional for one-time)
         await admin.from('profiles').update({ plan_key: planKey }).eq('id', userId);
 
-        // one-time: grant immediately
         if (s.mode === 'payment') {
           await grantCredits(userId, planKey, (s.invoice as string) ?? undefined);
         }
 
-        // subscription: persist sub mapping
         if (s.mode === 'subscription' && s.subscription) {
           const subId =
             typeof s.subscription === 'string' ? s.subscription : s.subscription.id;
@@ -83,7 +80,7 @@ export async function POST(req: Request) {
               user_id: userId,
               stripe_subscription_id: subId,
               plan_key: planKey,
-              status: 'active', // corrected by sub.updated
+              status: 'active',
             },
             { onConflict: 'stripe_subscription_id' }
           );
@@ -92,7 +89,6 @@ export async function POST(req: Request) {
       }
 
       case 'invoice.paid': {
-        // Recurring credit top-ups for subscriptions
         const invoice = event.data.object as Stripe.Invoice;
         const subId = (invoice as any).subscription as string | null | undefined;
         if (!subId) break;
@@ -113,11 +109,8 @@ export async function POST(req: Request) {
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted': {
         const sub = event.data.object as Stripe.Subscription;
-
-        // get Stripe customer id
         const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
 
-        // retrieve customer to read supabase_user_id we stored earlier
         const cust = await stripe.customers.retrieve(customerId);
         const userId =
           typeof cust !== 'string' && 'metadata' in cust
@@ -125,10 +118,7 @@ export async function POST(req: Request) {
             : undefined;
         if (!userId) break;
 
-        // plan key (if you attach metadata on price/subscription)
         const planKey = (sub.metadata?.plan_key as string | undefined) ?? undefined;
-
-        // normalize current period end
         const cpeUnix = (sub as any).current_period_end as number | undefined;
         const cpeIso = cpeUnix ? new Date(cpeUnix * 1000).toISOString() : null;
 
@@ -151,14 +141,12 @@ export async function POST(req: Request) {
       }
 
       default:
-        // no-op
         break;
     }
 
     return NextResponse.json({ received: true }, { status: 200 });
   } catch (e: any) {
     console.error('[webhook] handler error:', e?.message || e);
-    // acknowledge to prevent Stripe retry storms
     return NextResponse.json({ received: true }, { status: 200 });
   }
 }

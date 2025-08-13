@@ -1,48 +1,40 @@
 // lib/billing.ts
 // Single source of truth for plans/pricing used by Checkout, UI, and Webhooks.
-// Reads Stripe Price IDs from environment variables so you don't hardcode them.
+// Reads Stripe Price IDs from your env (STARTER_PRICE_ID, PREMIUM_PRICE_ID, …).
 
 export type PlanMode = 'subscription' | 'payment';
 
 export type PlanDef = {
   name: string;          // Display name
   credits: number;       // Credits granted per purchase/billing cycle
-  priceId: string;       // Stripe Price ID (price_xxx)
+  priceId: string;       // Stripe Price ID (price_...)
   priceLabel: string;    // UI label (e.g., "$9", "$29/mo")
   mode: PlanMode;        // 'payment' (one-time) or 'subscription'
 };
 
 export type PlanKey = 'Starter' | 'Premium'; // extend as needed
 
-function mustEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) {
-    // Throwing here is OK because this module is used server-side only.
-    // It will surface clearly in logs/build if any required env is missing.
-    throw new Error(`Missing environment variable: ${name}`);
+function anyEnv(...names: string[]): string {
+  for (const n of names) {
+    const v = process.env[n];
+    if (v && v.trim() !== '') return v.trim();
   }
-  return v;
+  throw new Error(`Missing environment variable: one of [${names.join(', ')}]`);
 }
 
-/**
- * All plans are read from env, so be sure these are defined in Vercel:
- *  - STRIPE_STARTER_PRICE_ID
- *  - STRIPE_PREMIUM_PRICE_ID
- *
- * You can also change credits/labels/modes here without touching routes.
- */
 const INTERNAL_PLANS: Record<PlanKey, PlanDef> = {
   Starter: {
     name: 'Starter',
     credits: 50,
-    priceId: mustEnv('STRIPE_STARTER_PRICE_ID'),
+    // Primary: STARTER_PRICE_ID. Fallbacks allow NEXT_PUBLIC_* if you ever reference it client-side.
+    priceId: anyEnv('STARTER_PRICE_ID', 'NEXT_PUBLIC_STARTER_PRICE_ID'),
     priceLabel: '$9',
     mode: 'payment',
   },
   Premium: {
     name: 'Premium',
     credits: 200,
-    priceId: mustEnv('STRIPE_PREMIUM_PRICE_ID'),
+    priceId: anyEnv('PREMIUM_PRICE_ID', 'NEXT_PUBLIC_PREMIUM_PRICE_ID'),
     priceLabel: '$29/mo',
     mode: 'subscription',
   },
@@ -75,7 +67,7 @@ export function listPlans(): Array<{ key: PlanKey; name: string; priceLabel: str
   });
 }
 
-/* ---------- Backward-compat exports (for any existing imports in your repo) ---------- */
+/* ---------- Back-compat exports (if other files import these) ---------- */
 export const PLANS: Record<PlanKey, PlanDef> = INTERNAL_PLANS;
 export const DISPLAY_ORDER: PlanKey[] = ['Starter', 'Premium'];
-/* ------------------------------------------------------------------------------------ */
+/* --------------------------------------------------------------------- */

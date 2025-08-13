@@ -11,11 +11,11 @@ export const runtime = 'nodejs';
 function mustEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
+  return v.trim();
 }
 function absUrl(req: Request, path: string) {
-  const base = process.env.NEXT_PUBLIC_APP_URL;
-  if (base && /^https?:\/\//i.test(base)) return new URL(path, base).toString();
+  const base = (process.env.NEXT_PUBLIC_APP_URL || '').trim().replace(/\/+$/, '');
+  if (base && /^https?:\/\//i.test(base)) return new URL(path, base + '/').toString();
   return new URL(path, new URL(req.url).origin).toString();
 }
 
@@ -76,7 +76,7 @@ async function createSession(req: Request, planKey: string) {
 
   if (!def.priceId) {
     return { error: NextResponse.json({ error: 'Plan is missing Stripe priceId' }, { status: 500 }) };
-  }
+    }
 
   const customerId = await ensureStripeCustomer({
     supabase,

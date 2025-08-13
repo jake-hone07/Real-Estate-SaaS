@@ -10,13 +10,12 @@ export const runtime = 'nodejs';
 function mustEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
+  return v.trim();
 }
 
-/** Build absolute URLs safely (uses NEXT_PUBLIC_APP_URL if set, else request origin). */
 function absUrl(req: Request, path: string) {
-  const base = process.env.NEXT_PUBLIC_APP_URL;
-  if (base && /^https?:\/\//i.test(base)) return new URL(path, base).toString();
+  const base = (process.env.NEXT_PUBLIC_APP_URL || '').trim().replace(/\/+$/, '');
+  if (base && /^https?:\/\//i.test(base)) return new URL(path, base + '/').toString();
   return new URL(path, new URL(req.url).origin).toString();
 }
 
@@ -80,7 +79,6 @@ async function createSession(req: Request, planKey: string) {
   }
   const { key, def } = planResult;
 
-  // Defensive: ensure priceId exists (pulled from env in lib/billing.ts)
   if (!def.priceId) {
     return { error: NextResponse.json({ error: 'Plan is missing Stripe priceId' }, { status: 500 }) };
   }
@@ -131,7 +129,7 @@ export async function POST(req: Request) {
   }
 }
 
-// GET: /api/checkout?planKey=Starter → 302 redirect to Stripe
+// GET: /api/checkout?planKey=Starter → 302 redirect
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
