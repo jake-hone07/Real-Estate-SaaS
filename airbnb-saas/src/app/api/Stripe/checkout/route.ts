@@ -1,87 +1,145 @@
-// src/app/api/stripe/checkout/route.ts
+// app/api/stripe/checkout/route.ts
+// Some code paths in your repo still hit this endpoint. This file mirrors /api/checkout.
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { stripe } from '@/lib/stripe';            // your Stripe helper (uses STRIPE_SECRET_KEY)
-import { PLANS } from '@/lib/billing';            // your plan map { starter | premium | coins }
+import Stripe from 'stripe';
+import { getPlan } from '@/lib/billing';
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL;  // e.g., https://your-app.vercel.app
+export const runtime = 'nodejs';
 
-type PlanKey = keyof typeof PLANS;
+function mustEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
+}
+function absUrl(req: Request, path: string) {
+  const base = process.env.NEXT_PUBLIC_APP_URL;
+  if (base && /^https?:\/\//i.test(base)) return new URL(path, base).toString();
+  return new URL(path, new URL(req.url).origin).toString();
+}
 
-export async function POST(req: Request) {
-  const supabase = createRouteHandlerClient({ cookies });
+const stripe = new Stripe(mustEnv('STRIPE_SECRET_KEY'));
 
-  // 1) Auth
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+type PlanDef = {
+  name: string;
+  credits: number;
+  priceId: string;
+  priceLabel: string;
+  mode: 'subscription' | 'payment';
+};
+type PlanResult = { key: string; def: PlanDef };
 
-  // 2) Which plan?
-  const { planKey } = (await req.json().catch(() => ({}))) as { planKey?: PlanKey };
-  const plan = planKey ? PLANS[planKey] : undefined;
-  if (!plan?.priceId) {
-    return NextResponse.json({ error: 'Invalid plan' }, { status: 400 });
-  }
+async function ensureStripeCustomer(opts: {
+  supabase: ReturnType<typeof createRouteHandlerClient<any>>;
+  userId: string;
+  email?: string;
+}) {
+  const { supabase, userId, email } = opts;
 
-  // 3) Load saved customer (may be from the wrong Stripe mode)
   const { data: profile } = await supabase
     .from('profiles')
     .select('stripe_customer_id, email')
-    .eq('id', user.id)
-    .single();
+    .eq('id', userId)
+    .maybeSingle();
 
-  let customerId = (profile?.stripe_customer_id ?? null) as string | null;
-
-  // Try to retrieve; if it doesn't exist in THIS mode (test/live), we'll create a new one
-  if (customerId) {
+  const existing = profile?.stripe_customer_id;
+  if (existing) {
     try {
-      await stripe.customers.retrieve(customerId);
+      await stripe.customers.retrieve(existing);
+      return existing;
     } catch {
-      customerId = null; // auto-heal: force a new customer in the current mode
+      // fall through to recreate
     }
   }
 
-  // Create & persist a new customer if needed
-  if (!customerId) {
-    const customer = await stripe.customers.create({
-      email: user.email ?? profile?.email ?? undefined,
-      metadata: { supabase_user_id: user.id },
-    });
-    customerId = customer.id;
-    await supabase.from('profiles').update({ stripe_customer_id: customerId }).eq('id', user.id);
+  const created = await stripe.customers.create({
+    email: email ?? profile?.email ?? undefined,
+    metadata: { supabase_user_id: userId },
+  });
+
+  // best-effort persist
+  const { error: upErr } = await supabase
+    .from('profiles')
+    .update({ stripe_customer_id: created.id })
+    .eq('id', userId);
+  if (upErr) {
+    await supabase
+      .from('profiles')
+      .upsert({ id: userId, stripe_customer_id: created.id }, { onConflict: 'id' });
   }
 
-  // 4) Create a Checkout Session
-  const isSubscription = plan.mode === 'subscription';
-  const base = APP_URL || new URL(req.url).origin;
-  const successUrl = `${base}/dashboard?purchase=success`;
-  const cancelUrl = `${base}/pricing?canceled=1`;
+  return created.id;
+}
 
+async function createSession(req: Request, planKey: string) {
+  const supabase = createRouteHandlerClient<any>({ cookies });
+  const { data: auth } = await supabase.auth.getUser();
+  const user = auth?.user;
+  if (!user) return { error: NextResponse.json({ error: 'Not authenticated' }, { status: 401 }) };
+
+  const planResult = getPlan(planKey) as PlanResult | null | undefined;
+  if (!planResult?.def) {
+    return { error: NextResponse.json({ error: 'Invalid plan' }, { status: 400 }) };
+  }
+  const { key, def } = planResult;
+
+  const customerId = await ensureStripeCustomer({
+    supabase,
+    userId: user.id,
+    email: user.email ?? undefined,
+  });
+
+  const successUrl = absUrl(req, '/billing?checkout=success');
+  const cancelUrl = absUrl(req, '/billing?checkout=canceled');
+
+  const session = await stripe.checkout.sessions.create({
+    mode: def.mode,
+    customer: customerId,
+    line_items: [{ price: def.priceId, quantity: 1 }],
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    allow_promotion_codes: true,
+    automatic_tax: { enabled: false },
+    metadata: {
+      supabase_user_id: user.id,
+      plan_key: key,
+      plan_name: def.name,
+    },
+  });
+
+  return { session };
+}
+
+// Keep POST (JSON) and GET (redirect) for compatibility with both patterns.
+export async function POST(req: Request) {
   try {
-    const session = await stripe.checkout.sessions.create({
-      mode: isSubscription ? 'subscription' : 'payment',
-      customer: customerId,
-      line_items: [{ price: plan.priceId, quantity: 1 }],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      allow_promotion_codes: true,
-      metadata: { supabase_user_id: user.id, plan_key: String(planKey) },
-      ...(isSubscription
-        ? {
-            subscription_data: {
-              metadata: { supabase_user_id: user.id, plan_key: String(planKey) },
-            },
-          }
-        : {}),
-    });
+    const body = (await req.json().catch(() => null)) as { planKey?: string } | null;
+    const planKey = body?.planKey;
+    if (!planKey) return NextResponse.json({ error: 'Missing planKey' }, { status: 400 });
 
-    return NextResponse.json({ url: session.url });
-  } catch (err: any) {
-    console.error('Checkout session error:', err);
-    const message =
-      err?.type === 'StripeInvalidRequestError' ? `Stripe error: ${err.message}` : 'Checkout failed';
-    return NextResponse.json({ error: message }, { status: 500 });
+    const { error, session } = await createSession(req, planKey);
+    if (error) return error;
+
+    return NextResponse.json({ id: session!.id, url: session!.url }, { status: 200 });
+  } catch (e: any) {
+    console.error('[stripe/checkout POST] error:', e?.message || e);
+    return NextResponse.json({ error: 'Unexpected error' }, { status: 500 });
+  }
+}
+
+export async function GET(req: Request) {
+  try {
+    const url = new URL(req.url);
+    const planKey = url.searchParams.get('planKey') || undefined;
+    if (!planKey) return NextResponse.json({ error: 'Missing planKey' }, { status: 400 });
+
+    const { error, session } = await createSession(req, planKey);
+    if (error) return error;
+
+    return NextResponse.redirect(session!.url!, { status: 302 });
+  } catch (e: any) {
+    console.error('[stripe/checkout GET] error:', e?.message || e);
+    return NextResponse.json({ error: 'Unexpected error' }, { status: 500 });
   }
 }
