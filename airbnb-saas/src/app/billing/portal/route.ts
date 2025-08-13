@@ -1,46 +1,39 @@
+// app/api/billing/portal/route.ts
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import Stripe from 'stripe';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-const SITE_URL =
-  process.env.NEXT_PUBLIC_SITE_URL ??
-  process.env.NEXT_PUBLIC_APP_URL ??
-  'http://localhost:3000';
+export const runtime = 'nodejs';
+
+function mustEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
+}
+const stripe = new Stripe(mustEnv('STRIPE_SECRET_KEY'));
 
 export async function POST() {
-  const supabase = createRouteHandlerClient({ cookies });
+  const supabase = createRouteHandlerClient<any>({ cookies });
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  // need stripe_customer_id on profile
-  const { data: profile, error } = await supabase
+  const { data: profile } = await supabase
     .from('profiles')
-    .select('stripe_customer_id, email')
+    .select('stripe_customer_id')
     .eq('id', user.id)
-    .single();
+    .maybeSingle();
 
-  if (error) return NextResponse.json({ error: 'Profile lookup failed' }, { status: 500 });
-
-  let customerId = profile?.stripe_customer_id as string | null;
-
-  if (!customerId) {
-    // create customer on the fly
-    const customer = await stripe.customers.create({
-      email: (user.email ?? profile?.email) || undefined,
-      metadata: { supabase_user_id: user.id },
-    });
-    customerId = customer.id;
-    await supabase
-      .from('profiles')
-      .update({ stripe_customer_id: customerId })
-      .eq('id', user.id);
+  if (!profile?.stripe_customer_id) {
+    return NextResponse.json({ error: 'No Stripe customer' }, { status: 400 });
   }
 
   const session = await stripe.billingPortal.sessions.create({
-    customer: customerId!,
-    return_url: `${SITE_URL}/dashboard`,
+    customer: profile.stripe_customer_id,
+    return_url:
+      process.env.NEXT_PUBLIC_APP_URL
+        ? `${process.env.NEXT_PUBLIC_APP_URL}/billing`
+        : 'http://localhost:3000/billing',
   });
 
   return NextResponse.json({ url: session.url });
