@@ -3,17 +3,41 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { qualityReport } from "@/lib/lint";
 
-type TabKey = "description" | "titles" | "highlights" | "sections" | "social" | "seo";
+/** ---------- Types ---------- */
+type TabKey =
+  | "preview"
+  | "title"
+  | "summary"
+  | "description"
+  | "highlights"
+  | "sections"
+  | "amenities"
+  | "neighborhood"
+  | "rules"
+  | "photos"
+  | "social"
+  | "seo";
+
 type GenState = "idle" | "loading" | "done" | "error";
-type Sections = { space?: string; access?: string; notes?: string; };
+
+type Sections = { space?: string; access?: string; notes?: string };
+
 type ResultPayload = {
+  // core
+  titlePrimary?: string;
+  titles?: string[];
+  summary?: string;
   description?: string;
-  titles?: string[];       // A/B/C
   highlights?: string[];
   sections?: Sections;
+  // extended
+  amenities?: string[];
+  neighborhood?: string;
+  rules?: string;
+  photoCaptions?: string[];
   social?: { x?: string; instagram?: string };
   seo?: string[];
-  meta?: { word_count?: number; reading_time_sec?: number; flags?: any };
+  meta?: { word_count?: number; reading_time_sec?: number };
 };
 
 type Options = {
@@ -29,9 +53,12 @@ type Options = {
   includeCaption: boolean;
   includeSEO: boolean;
   includeSections: boolean;
+  includeAmenities: boolean;
+  includeNeighborhood: boolean;
+  includeRules: boolean;
+  includePhotos: boolean;
 };
 
-const MIN_CHARS = 140;
 const DEFAULT_OPTIONS: Options = {
   tone: "Warm & professional",
   audience: "Families & small groups",
@@ -45,116 +72,154 @@ const DEFAULT_OPTIONS: Options = {
   includeCaption: true,
   includeSEO: true,
   includeSections: true,
+  includeAmenities: true,
+  includeNeighborhood: true,
+  includeRules: true,
+  includePhotos: true,
 };
 
-type Version = { when: number; result: ResultPayload; options: Options; facts: string; };
+const MIN_CHARS = 140;
 
+/** ---------- Component ---------- */
 export default function GenerateClient() {
-  // Inputs split by helpful sections
+  /** Inputs */
   const [basics, setBasics] = useState("");
-  const [highlights, setHighlights] = useState("");
-  const [location, setLocation] = useState("");
-  const [rules, setRules] = useState("");
+  const [highlightsIn, setHighlightsIn] = useState("");
+  const [locationIn, setLocationIn] = useState("");
+  const [rulesIn, setRulesIn] = useState("");
 
-  // Options
+  /** Options */
   const [opt, setOpt] = useState<Options>(DEFAULT_OPTIONS);
 
-  // State
+  /** State */
   const [state, setState] = useState<GenState>("idle");
   const [err, setErr] = useState<string | null>(null);
   const [res, setRes] = useState<ResultPayload>({});
-  const [active, setActive] = useState<TabKey>("description");
+  const [active, setActive] = useState<TabKey>("preview");
   const [copied, setCopied] = useState<string | null>(null);
-  const [history, setHistory] = useState<Version[]>([]);
   const [projectName, setProjectName] = useState("Untitled listing");
-
   const rightRef = useRef<HTMLDivElement>(null);
 
-  // Derived full facts
+  /** Derived */
   const fullFacts = useMemo(() => {
     const parts = [
       basics && `BASICS:\n${basics.trim()}`,
-      highlights && `HIGHLIGHTS:\n${highlights.trim()}`,
-      location && `LOCATION:\n${location.trim()}`,
-      rules && `HOUSE RULES:\n${rules.trim()}`,
+      highlightsIn && `HIGHLIGHTS:\n${highlightsIn.trim()}`,
+      locationIn && `LOCATION:\n${locationIn.trim()}`,
+      rulesIn && `HOUSE RULES:\n${rulesIn.trim()}`,
     ].filter(Boolean);
     return parts.join("\n\n").trim();
-  }, [basics, highlights, location, rules]);
+  }, [basics, highlightsIn, locationIn, rulesIn]);
 
-  const charCount = fullFacts.length;
-  const q = useMemo(() => qualityReport(fullFacts), [fullFacts]);
+  const chars = fullFacts.length;
+  const quality = useMemo(() => qualityReport(fullFacts), [fullFacts]);
+  const disableGenerate = state === "loading" || chars < MIN_CHARS;
 
-  // Autosave/restore
+  /** Autosave */
   useEffect(() => {
-    const raw = localStorage.getItem("lg_project");
+    const raw = localStorage.getItem("lg_project_v2");
     if (raw) {
       try {
         const p = JSON.parse(raw);
-        if (p.basics !== undefined) setBasics(p.basics);
-        if (p.highlights !== undefined) setHighlights(p.highlights);
-        if (p.location !== undefined) setLocation(p.location);
-        if (p.rules !== undefined) setRules(p.rules);
-        if (p.opt) setOpt(p.opt);
-        if (p.projectName) setProjectName(p.projectName);
+        setBasics(p.basics ?? "");
+        setHighlightsIn(p.highlightsIn ?? "");
+        setLocationIn(p.locationIn ?? "");
+        setRulesIn(p.rulesIn ?? "");
+        setOpt({ ...DEFAULT_OPTIONS, ...(p.opt || {}) });
+        setProjectName(p.projectName || "Untitled listing");
       } catch {}
     }
-    const rawHist = localStorage.getItem("lg_history");
-    if (rawHist) try { setHistory(JSON.parse(rawHist)); } catch {}
   }, []);
-
   useEffect(() => {
-    localStorage.setItem("lg_project", JSON.stringify({ basics, highlights, location, rules, opt, projectName }));
-  }, [basics, highlights, location, rules, opt, projectName]);
+    localStorage.setItem(
+      "lg_project_v2",
+      JSON.stringify({ basics, highlightsIn, locationIn, rulesIn, opt, projectName })
+    );
+  }, [basics, highlightsIn, locationIn, rulesIn, opt, projectName]);
 
-  useEffect(() => {
-    localStorage.setItem("lg_history", JSON.stringify(history.slice(0, 5)));
-  }, [history]);
-
-  // Keyboard shortcuts
+  /** Keyboard shortcut: Cmd/Ctrl + Enter = Generate */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "enter") {
         e.preventDefault();
-        onGenerate();
+        void onGenerate();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [fullFacts, opt]);
 
-  function setOptField<K extends keyof Options>(key: K, value: Options[K]) {
-    setOpt(prev => ({ ...prev, [key]: value }));
+  /** Helpers */
+  function setOptField<K extends keyof Options>(k: K, v: Options[K]) {
+    setOpt((prev) => ({ ...prev, [k]: v }));
+  }
+  const field = useCallback(
+    (label: string, value: string, setter: (s: string) => void, placeholder: string) => (
+      <div>
+        <label className="mb-1 block text-sm font-medium text-gray-300">{label}</label>
+        <textarea
+          value={value}
+          onChange={(e) => setter(e.target.value)}
+          placeholder={placeholder}
+          className="w-full min-h-28 rounded-md border border-gray-700 bg-transparent p-3 text-gray-100 outline-none focus:ring-2 focus:ring-gray-500"
+        />
+      </div>
+    ),
+    []
+  );
+  const pill = (text: string, onClick: () => void, active?: boolean) => (
+    <button
+      onClick={onClick}
+      className={`rounded-full border px-3 py-1 text-xs ${active ? "border-gray-400 bg-white/5" : "border-gray-700 text-gray-300 hover:bg-white/5"}`}
+    >
+      {text}
+    </button>
+  );
+  function flash(key: string) {
+    setCopied(key);
+    setTimeout(() => setCopied(null), 1100);
   }
 
+  /** Sample */
   function insertSample() {
-    setBasics("2BR/1BA condo • sleeps 4 • private balcony • fast Wi-Fi • workspace • in-unit laundry • free parking");
-    setHighlights("Floor-to-ceiling windows, sunset mountain view, espresso machine, blackout curtains, quiet building");
-    setLocation("5 min walk to cafés, 7 min to riverwalk, 12 min to convention center; 15-min drive to airport");
-    setRules("No parties • quiet hours 10pm–7am • no smoking/vaping • pets on approval only");
-    setOpt(prev => ({ ...prev, tone: "Warm & professional", audience: "Couples & business travelers", wordBudget: 180 }));
+    setBasics(
+      "2BR/1BA condo • sleeps 4 • private balcony • fast Wi-Fi • desk/workspace • in-unit laundry • free parking"
+    );
+    setHighlightsIn(
+      "Floor-to-ceiling windows, sunset mountain view, espresso machine, blackout curtains, quiet building"
+    );
+    setLocationIn(
+      "5-min walk to cafés, 7-min to riverwalk, 12-min to convention center; 15-min drive to airport"
+    );
+    setRulesIn("No parties • quiet hours 10pm–7am • no smoking/vaping • pets on approval only");
+    setOpt((p) => ({ ...p, tone: "Warm & professional", audience: "Couples & business travelers" }));
   }
 
+  /** API */
   async function callApi(payload: any) {
-    const resp = await fetch("/api/generate", {
+    const r = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    if (data.error) throw new Error(data.error);
-    return data;
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const json = await r.json();
+    if (json.error) throw new Error(json.error);
+    return json as { result: ResultPayload };
   }
 
   async function onGenerate() {
-    if (charCount < MIN_CHARS) { setErr(`Add more detail (≥ ${MIN_CHARS} chars).`); return; }
-    setState("loading"); setErr(null); setActive("description"); setRes({});
+    if (chars < MIN_CHARS) {
+      setErr(`Add a bit more detail first (≥ ${MIN_CHARS} characters).`);
+      return;
+    }
+    setState("loading");
+    setErr(null);
     try {
-      const data = await callApi({ facts: fullFacts, options: opt });
-      const result: ResultPayload = data.result || {};
-      setRes(result);
+      const { result } = await callApi({ facts: fullFacts, options: opt });
+      setRes(result || {});
       setState("done");
-      setHistory(prev => [{ when: Date.now(), result, options: opt, facts: fullFacts }, ...prev].slice(0, 5));
+      setActive("preview");
       requestAnimationFrame(() => rightRef.current?.scrollIntoView({ behavior: "smooth" }));
     } catch (e: any) {
       setErr(e?.message || "Something went wrong");
@@ -162,104 +227,65 @@ export default function GenerateClient() {
     }
   }
 
-  async function onRegenerate(part: "description" | "titles" | "highlights" | "sections" | "social" | "seo", tweak?: string) {
-    setState("loading"); setErr(null);
+  async function regeneratePart(part: string, tweak?: string) {
+    setState("loading");
+    setErr(null);
     try {
-      const data = await callApi({ facts: fullFacts, options: opt, requestParts: [part], tweak });
-      const next: ResultPayload = { ...res, ...(data.result || {}) };
-      setRes(next);
+      const { result } = await callApi({
+        facts: fullFacts,
+        options: opt,
+        requestParts: [part],
+        tweak,
+      });
+      setRes((prev) => ({ ...prev, ...(result || {}) }));
       setState("done");
-      setHistory(prev => [{ when: Date.now(), result: next, options: opt, facts: fullFacts }, ...prev].slice(0, 5));
     } catch (e: any) {
       setErr(e?.message || "Something went wrong");
       setState("error");
     }
   }
 
-  function copy(text: string | string[] | Sections | undefined, key: string) {
-    let out = "";
-    if (typeof text === "string") out = text;
-    else if (Array.isArray(text)) out = text.join("\n");
-    else if (text && typeof text === "object") {
-      out = [
-        text.space ? `THE SPACE:\n${text.space}` : "",
-        text.access ? `GUEST ACCESS:\n${text.access}` : "",
-        text.notes ? `OTHER THINGS TO NOTE:\n${text.notes}` : "",
-      ].filter(Boolean).join("\n\n");
-    }
-    if (!out) return;
-    navigator.clipboard.writeText(out);
-    setCopied(key); setTimeout(() => setCopied(null), 1200);
+  /** Copy / Export */
+  function copyText(text: string) {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
   }
-
-  function download(text: string | string[] | Sections | undefined, filename: string) {
-    let out = "";
-    if (typeof text === "string") out = text;
-    else if (Array.isArray(text)) out = text.join("\n");
-    else if (text && typeof text === "object") {
-      out = [
-        text.space ? `THE SPACE:\n${text.space}` : "",
-        text.access ? `GUEST ACCESS:\n${text.access}` : "",
-        text.notes ? `OTHER THINGS TO NOTE:\n${text.notes}` : "",
-      ].filter(Boolean).join("\n\n");
-    }
-    if (!out) return;
-    const blob = new Blob([out], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
-    URL.revokeObjectURL(url);
+  function copyList(items?: string[], bullet = "• ") {
+    if (!items?.length) return;
+    navigator.clipboard.writeText(items.map((x) => `${bullet}${x}`).join("\n"));
   }
-
-  function exportJSON() {
-    const payload = {
-      project: projectName,
-      options: opt,
-      facts: fullFacts,
-      result: res,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "listing.json"; a.click();
-    URL.revokeObjectURL(url);
+  function copySections(s?: Sections) {
+    if (!s) return;
+    const t = [
+      s.space ? `THE SPACE:\n${s.space}` : "",
+      s.access ? `GUEST ACCESS:\n${s.access}` : "",
+      s.notes ? `OTHER THINGS TO NOTE:\n${s.notes}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    copyText(t);
   }
-
   function copyAllForAirbnb() {
     const chunks = [
-      res.titles?.[0] ? `TITLE:\n${res.titles[0]}` : "",
+      res.titlePrimary ? `TITLE:\n${res.titlePrimary}` : "",
+      res.summary ? `SUMMARY:\n${res.summary}` : "",
       res.description ? `DESCRIPTION:\n${res.description}` : "",
       res.sections?.space ? `THE SPACE:\n${res.sections.space}` : "",
       res.sections?.access ? `GUEST ACCESS:\n${res.sections.access}` : "",
       res.sections?.notes ? `OTHER THINGS TO NOTE:\n${res.sections.notes}` : "",
-      res.highlights?.length ? `HIGHLIGHTS:\n${res.highlights.map(b => `• ${b}`).join("\n")}` : "",
-      res.seo?.length ? `SEO TAGS:\n${res.seo.join(", ")}` : "",
-    ].filter(Boolean).join("\n\n");
+      res.highlights?.length ? `HIGHLIGHTS:\n${res.highlights.map((b) => `• ${b}`).join("\n")}` : "",
+      res.amenities?.length ? `AMENITIES:\n${res.amenities.map((b) => `• ${b}`).join("\n")}` : "",
+      res.neighborhood ? `NEIGHBORHOOD:\n${res.neighborhood}` : "",
+      res.rules ? `HOUSE RULES:\n${res.rules}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
     if (!chunks) return;
-    navigator.clipboard.writeText(chunks);
-    setCopied("all"); setTimeout(() => setCopied(null), 1200);
+    copyText(chunks);
+    flash("all");
   }
 
-  const disableGen = state === "loading" || charCount < MIN_CHARS;
-
-  // UI helpers
-  const field = useCallback((label: string, value: string, setter: (s: string) => void, placeholder: string) => (
-    <div>
-      <label className="mb-1 block text-sm font-medium text-gray-300">{label}</label>
-      <textarea
-        value={value}
-        onChange={(e) => setter(e.target.value)}
-        placeholder={placeholder}
-        className="w-full min-h-28 rounded-md border border-gray-700 bg-transparent p-3 text-gray-100 outline-none focus:ring-2 focus:ring-gray-500"
-      />
-    </div>
-  ), []);
-
-  const pill = (text: string, onClick: () => void, active?: boolean) => (
-    <button
-      onClick={onClick}
-      className={`rounded-full border px-3 py-1 text-xs ${active ? "border-gray-400 bg-white/5" : "border-gray-700 text-gray-300 hover:bg-white/5"}`}
-    >{text}</button>
-  );
-
+  /** UI */
   return (
     <div className="grid gap-6 md:grid-cols-2">
       {/* LEFT: INPUTS */}
@@ -271,155 +297,193 @@ export default function GenerateClient() {
             className="rounded-md border border-gray-700 bg-transparent px-2 py-1 text-sm"
             placeholder="Project name"
           />
-          {pill("Insert sample", insertSample)}
-          {pill("Clear all", () => { setBasics(""); setHighlights(""); setLocation(""); setRules(""); })}
-          <span className="ml-auto text-xs text-gray-400">{charCount}/{MIN_CHARS}+ chars</span>
         </div>
 
-        {/* Quality meter */}
+        {/* Quality */}
         <div className="rounded-lg border border-gray-700 p-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-300">Quality check</span>
-            <span className="text-sm text-gray-400">Score: {q.score}/100</span>
+            <div className="flex items-center gap-2">
+              {pill("Insert sample", insertSample)}
+              {pill("Clear", () => {
+                setBasics("");
+                setHighlightsIn("");
+                setLocationIn("");
+                setRulesIn("");
+              })}
+            </div>
+            <span className="text-xs text-gray-400">
+              {chars}/{MIN_CHARS}+ chars
+            </span>
           </div>
-          <div className="mt-2 h-2 w-full overflow-hidden rounded bg-gray-800/50">
+          <div className="mt-3 h-2 w-full overflow-hidden rounded bg-gray-800/50">
             <div
-              className={`h-full ${q.score > 80 ? "bg-emerald-500" : q.score > 60 ? "bg-amber-400" : "bg-rose-500"}`}
-              style={{ width: `${q.score}%` }}
+              className={`h-full ${quality.score > 80 ? "bg-emerald-500" : quality.score > 60 ? "bg-amber-400" : "bg-rose-500"}`}
+              style={{ width: `${quality.score}%` }}
             />
           </div>
-          {q.reasons.length ? (
+          {!!quality.reasons.length && (
             <ul className="mt-2 list-disc pl-5 text-xs text-gray-400">
-              {q.reasons.map((r, i) => <li key={i}>{r}</li>)}
+              {quality.reasons.map((r, i) => (
+                <li key={i}>{r}</li>
+              ))}
             </ul>
-          ) : null}
+          )}
         </div>
 
-        {field("Basics", basics, setBasics, "Beds/baths, layout, amenities, capacity, parking, Wi-Fi…")}
-        {field("Highlights", highlights, setHighlights, "Unique touches: view, hot tub, fire pit, espresso machine…")}
-        {field("Location", location, setLocation, "Walking times, nearby attractions, neighborhood vibe…")}
-        {field("House rules", rules, setRules, "Quiet hours, no parties, pets, smoking…")}
+        {field("Basics", basics, setBasics, "Beds/baths, sleeps, property type, standout amenities, parking, Wi-Fi…")}
+        {field(
+          "Highlights",
+          highlightsIn,
+          setHighlightsIn,
+          "Unique touches: view, hot tub, fire pit, chef’s kitchen, espresso machine, blackout curtains…"
+        )}
+        {field(
+          "Location",
+          locationIn,
+          setLocationIn,
+          "Walking times (cafés, groceries, transit), nearby attractions, neighborhood vibe…"
+        )}
+        {field("House rules", rulesIn, setRulesIn, "Quiet hours, parties, pets, smoking…")}
 
         {/* Options */}
         <div className="rounded-lg border border-gray-700 p-4 space-y-4">
           <h3 className="font-medium">Options</h3>
           <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-sm text-gray-300">Tone</label>
-              <select value={opt.tone} onChange={(e)=>setOptField("tone", e.target.value)} className="w-full rounded-md border border-gray-700 bg-transparent px-3 py-2 text-sm">
-                {["Warm & professional","Friendly & upbeat","Calm & minimalist","Luxury, refined","Family-friendly"].map(t=>(
-                  <option key={t} value={t} className="bg-black">{t}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-gray-300">Audience</label>
-              <select value={opt.audience} onChange={(e)=>setOptField("audience", e.target.value)} className="w-full rounded-md border border-gray-700 bg-transparent px-3 py-2 text-sm">
-                {["Families & small groups","Couples & business travelers","Remote workers","Adventure travelers","Long-term stays"].map(t=>(
-                  <option key={t} value={t} className="bg-black">{t}</option>
-                ))}
-              </select>
-            </div>
+            <Select label="Tone" value={opt.tone} onChange={(v) => setOptField("tone", v)} items={[
+              "Warm & professional",
+              "Friendly & upbeat",
+              "Calm & minimalist",
+              "Luxury, refined",
+              "Family-friendly",
+            ]}/>
+            <Select label="Audience" value={opt.audience} onChange={(v) => setOptField("audience", v)} items={[
+              "Families & small groups",
+              "Couples & business travelers",
+              "Remote workers",
+              "Adventure travelers",
+              "Long-term stays",
+            ]}/>
             <div>
               <label className="mb-1 block text-sm text-gray-300">
                 Word budget: <span className="text-gray-400">{opt.wordBudget} words</span>
               </label>
-              <input type="range" min={120} max={260} step={10} value={opt.wordBudget}
-                     onChange={(e)=>setOptField("wordBudget", parseInt(e.target.value))}
-                     className="w-full"/>
+              <input
+                type="range"
+                min={120}
+                max={260}
+                step={10}
+                value={opt.wordBudget}
+                onChange={(e) => setOptField("wordBudget", parseInt(e.target.value))}
+                className="w-full"
+              />
             </div>
-            <div>
-              <label className="mb-1 block text-sm text-gray-300">Language</label>
-              <select value={opt.language} onChange={(e)=>setOptField("language", e.target.value)} className="w-full rounded-md border border-gray-700 bg-transparent px-3 py-2 text-sm">
-                {["English","Spanish","French","German","Portuguese","Italian","Japanese","Chinese"].map(t=>(
-                  <option key={t} value={t} className="bg-black">{t}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-gray-300">Platform style</label>
-              <select value={opt.platform} onChange={(e)=>setOptField("platform", e.target.value as any)} className="w-full rounded-md border border-gray-700 bg-transparent px-3 py-2 text-sm">
-                {["Airbnb","VRBO","Booking"].map(t=>(
-                  <option key={t} value={t} className="bg-black">{t}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-gray-300">Season</label>
-              <select value={opt.season} onChange={(e)=>setOptField("season", e.target.value as any)} className="w-full rounded-md border border-gray-700 bg-transparent px-3 py-2 text-sm">
-                {["Default","Spring","Summer","Fall","Winter"].map(t=>(
-                  <option key={t} value={t} className="bg-black">{t}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-gray-300">Units</label>
-              <select value={opt.unit} onChange={(e)=>setOptField("unit", e.target.value as any)} className="w-full rounded-md border border-gray-700 bg-transparent px-3 py-2 text-sm">
-                {["imperial","metric"].map(t=>(
-                  <option key={t} value={t} className="bg-black">{t}</option>
-                ))}
-              </select>
-            </div>
+            <Select label="Language" value={opt.language} onChange={(v)=>setOptField("language", v)} items={[
+              "English","Spanish","French","German","Portuguese","Italian","Japanese","Chinese"
+            ]}/>
+            <Select label="Platform style" value={opt.platform} onChange={(v)=>setOptField("platform", v as any)} items={[
+              "Airbnb","VRBO","Booking"
+            ]}/>
+            <Select label="Season" value={opt.season || "Default"} onChange={(v)=>setOptField("season", v as any)} items={[
+              "Default","Spring","Summer","Fall","Winter"
+            ]}/>
+            <Select label="Units" value={opt.unit} onChange={(v)=>setOptField("unit", v as any)} items={[
+              "imperial","metric"
+            ]}/>
           </div>
 
           <div className="flex flex-wrap items-center gap-4 text-sm">
-            <label className="flex items-center gap-2"><input type="checkbox" checked={opt.includeTitle} onChange={(e)=>setOptField("includeTitle", e.target.checked)} /> Title</label>
-            <label className="flex items-center gap-2"><input type="checkbox" checked={opt.includeHighlights} onChange={(e)=>setOptField("includeHighlights", e.target.checked)} /> Highlights</label>
-            <label className="flex items-center gap-2"><input type="checkbox" checked={opt.includeCaption} onChange={(e)=>setOptField("includeCaption", e.target.checked)} /> Social caption</label>
-            <label className="flex items-center gap-2"><input type="checkbox" checked={opt.includeSEO} onChange={(e)=>setOptField("includeSEO", e.target.checked)} /> SEO</label>
-            <label className="flex items-center gap-2"><input type="checkbox" checked={opt.includeSections} onChange={(e)=>setOptField("includeSections", e.target.checked)} /> Airbnb sections</label>
+            <Toggle label="Title" value={opt.includeTitle} onChange={(v)=>setOptField("includeTitle", v)} />
+            <Toggle label="Highlights" value={opt.includeHighlights} onChange={(v)=>setOptField("includeHighlights", v)} />
+            <Toggle label="Social" value={opt.includeCaption} onChange={(v)=>setOptField("includeCaption", v)} />
+            <Toggle label="SEO" value={opt.includeSEO} onChange={(v)=>setOptField("includeSEO", v)} />
+            <Toggle label="Sections" value={opt.includeSections} onChange={(v)=>setOptField("includeSections", v)} />
+            <Toggle label="Amenities" value={opt.includeAmenities} onChange={(v)=>setOptField("includeAmenities", v)} />
+            <Toggle label="Neighborhood" value={opt.includeNeighborhood} onChange={(v)=>setOptField("includeNeighborhood", v)} />
+            <Toggle label="Rules" value={opt.includeRules} onChange={(v)=>setOptField("includeRules", v)} />
+            <Toggle label="Photo captions" value={opt.includePhotos} onChange={(v)=>setOptField("includePhotos", v)} />
           </div>
         </div>
 
-        {/* CTA row */}
+        {/* CTA */}
         <div className="flex flex-wrap items-center gap-3">
-          <button onClick={onGenerate} disabled={disableGen}
-                  className="rounded-md border border-gray-600 px-4 py-2 text-sm disabled:opacity-50">
+          <button
+            onClick={onGenerate}
+            disabled={disableGenerate}
+            className="rounded-md border border-gray-600 px-4 py-2 text-sm disabled:opacity-50"
+          >
             {state === "loading" ? "Generating…" : "Generate"}
           </button>
           {err && <span className="text-sm text-rose-400">{err}</span>}
-          {!err && state === "done" && <span className="text-sm text-emerald-400">Done — see results →</span>}
         </div>
-
-        {/* Version history */}
-        {history.length > 0 && (
-          <div className="rounded-lg border border-gray-700 p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-sm font-medium">Version history</h3>
-              <button className="text-xs text-gray-400 underline" onClick={()=>setHistory([])}>Clear</button>
-            </div>
-            <ul className="space-y-2">
-              {history.map((v, i)=>(
-                <li key={v.when} className="flex items-center justify-between gap-2 text-sm">
-                  <span className="truncate text-gray-300">{new Date(v.when).toLocaleTimeString()} • {v.options.tone} • {v.options.wordBudget}w</span>
-                  <button className="rounded-md border border-gray-700 px-2 py-1 text-xs"
-                          onClick={()=>{ setRes(v.result); setOpt(v.options); }}>
-                    Restore
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
       </section>
 
       {/* RIGHT: RESULTS */}
       <section ref={rightRef} className="rounded-lg border border-gray-700 p-4 md:sticky md:top-6 h-fit">
+        {/* Tabs */}
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          {(["description","titles","highlights","sections","social","seo"] as TabKey[]).map(k=>(
-            <button key={k} onClick={()=>setActive(k)}
-              className={`rounded-md px-3 py-1.5 text-sm ${active===k ? "border border-gray-500 bg-white/5" : "text-gray-300 hover:bg-white/5"}`}>
+          {(
+            [
+              "preview",
+              "title",
+              "summary",
+              "description",
+              "highlights",
+              "sections",
+              "amenities",
+              "neighborhood",
+              "rules",
+              "photos",
+              "social",
+              "seo",
+            ] as TabKey[]
+          ).map((k) => (
+            <button
+              key={k}
+              onClick={() => setActive(k)}
+              className={`rounded-md px-3 py-1.5 text-sm ${
+                active === k ? "border border-gray-500 bg-white/5" : "text-gray-300 hover:bg-white/5"
+              }`}
+            >
               {label(k)}
             </button>
           ))}
+
           <div className="ml-auto flex items-center gap-2">
-            <button onClick={copyAllForAirbnb} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-              {copied==="all" ? "Copied!" : "Copy All for Airbnb"}
+            <button
+              onClick={copyAllForAirbnb}
+              className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+            >
+              {copied === "all" ? "Copied!" : "Copy All for Airbnb"}
             </button>
-            <button onClick={exportJSON} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Export JSON</button>
+            <button
+              onClick={() => {
+                const payload = {
+                  project: projectName,
+                  options: opt,
+                  facts: fullFacts,
+                  result: res,
+                };
+                const blob = new Blob([JSON.stringify(payload, null, 2)], {
+                  type: "application/json",
+                });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "listing.json";
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+            >
+              Export JSON
+            </button>
           </div>
         </div>
 
+        {/* States */}
+        {state === "idle" && (
+          <p className="text-sm text-gray-500">Your results will appear here after you generate.</p>
+        )}
         {state === "loading" && (
           <div className="animate-pulse space-y-2">
             <div className="h-4 rounded bg-gray-800/50" />
@@ -428,37 +492,54 @@ export default function GenerateClient() {
             <div className="h-4 w-2/6 rounded bg-gray-800/50" />
           </div>
         )}
-
-        {state === "idle" && (
-          <p className="text-sm text-gray-500">Your results will appear here after you generate.</p>
-        )}
-
         {state === "error" && (
           <p className="text-sm text-rose-400">{err || "Something went wrong."}</p>
         )}
 
         {state === "done" && (
           <div className="space-y-4">
-            {active === "description" && (
-              <Block
-                title="Description"
-                body={res.description || ""}
-                onCopy={()=>copy(res.description,"desc")}
-                onDownload={()=>download(res.description,"description.txt")}
-                onRefine={(t)=>onRegenerate("description",t)}
-                copied={copied==="desc"}
-                refineOptions={["Shorter","Longer","More family-focused","More luxury","More minimalist","Tighten language"]}
+            {active === "preview" && <PreviewPanel res={res} />}
+
+            {active === "title" && (
+              <TitlesBlock
+                primary={res.titlePrimary || ""}
+                titles={res.titles || []}
+                onCopyPrimary={() => {
+                  copyText(res.titlePrimary || "");
+                  flash("title1");
+                } }
+                onCopyAll={() => {
+                  copyList(res.titles || [], "");
+                  flash("titleall");
+                } }
+                onRegenerate={() => regeneratePart("titles")} platform={"Airbnb"}              />
+            )}
+
+            {active === "summary" && (
+              <RefinableBlock
+                title="Summary"
+                text={res.summary || ""}
+                onCopy={() => {
+                  copyText(res.summary || "");
+                  flash("summary");
+                }}
+                onDownload={() => downloadText(res.summary, "summary.txt")}
+                refine={(t) => regeneratePart("summary", t)}
+                options={["Shorter", "Longer", "More luxury", "More family-friendly", "Tighter"]}
               />
             )}
 
-            {active === "titles" && (
-              <TitlesBlock
-                titles={res.titles || []}
-                platform={opt.platform}
-                onCopy={()=>copy(res.titles,"titles")}
-                onDownload={()=>download(res.titles,"titles.txt")}
-                onRegenerate={()=>onRegenerate("titles")}
-                copied={copied==="titles"}
+            {active === "description" && (
+              <RefinableBlock
+                title="Description"
+                text={res.description || ""}
+                onCopy={() => {
+                  copyText(res.description || "");
+                  flash("desc");
+                }}
+                onDownload={() => downloadText(res.description, "description.txt")}
+                refine={(t) => regeneratePart("description", t)}
+                options={["Shorter", "Longer", "More sensory", "More minimalist", "Tighter"]}
               />
             )}
 
@@ -466,41 +547,137 @@ export default function GenerateClient() {
               <ListBlock
                 title="Highlights"
                 items={res.highlights || []}
-                onCopy={()=>copy(res.highlights,"hl")}
-                onDownload={()=>download(res.highlights,"highlights.txt")}
-                onRegenerate={()=>onRegenerate("highlights")}
-                copied={copied==="hl"}
+                onCopy={() => {
+                  copyList(res.highlights);
+                  flash("highlights");
+                }}
+                onDownload={() => downloadList(res.highlights, "highlights.txt")}
+                onRegenerate={() => regeneratePart("highlights")}
+                tip="Use concrete claims and unique amenities."
               />
             )}
 
             {active === "sections" && (
               <SectionsBlock
                 sections={res.sections || {}}
-                onCopy={()=>copy(res.sections,"sections")}
-                onDownload={()=>download(res.sections,"airbnb-sections.txt")}
-                onRegenerate={()=>onRegenerate("sections")}
-                copied={copied==="sections"}
+                onCopy={() => {
+                  copySections(res.sections);
+                  flash("sections");
+                }}
+                onDownload={() =>
+                  downloadText(
+                    [
+                      res.sections?.space ? `THE SPACE:\n${res.sections.space}` : "",
+                      res.sections?.access ? `GUEST ACCESS:\n${res.sections.access}` : "",
+                      res.sections?.notes ? `OTHER THINGS TO NOTE:\n${res.sections.notes}` : "",
+                    ]
+                      .filter(Boolean)
+                      .join("\n\n"),
+                    "airbnb-sections.txt"
+                  )
+                }
+                onRegenerate={() => regeneratePart("sections")}
+              />
+            )}
+
+            {active === "amenities" && (
+              <ListBlock
+                title="Amenities"
+                items={res.amenities || []}
+                onCopy={() => {
+                  copyList(res.amenities);
+                  flash("amenities");
+                }}
+                onDownload={() => downloadList(res.amenities, "amenities.txt")}
+                onRegenerate={() => regeneratePart("amenities")}
+                tip="Group similar items; avoid duplicates."
+              />
+            )}
+
+            {active === "neighborhood" && (
+              <RefinableBlock
+                title="Neighborhood"
+                text={res.neighborhood || ""}
+                onCopy={() => {
+                  copyText(res.neighborhood || "");
+                  flash("neighborhood");
+                }}
+                onDownload={() => downloadText(res.neighborhood, "neighborhood.txt")}
+                refine={(t) => regeneratePart("neighborhood", t)}
+                options={["Shorter", "Longer", "More landmarks", "More walkability"]}
+              />
+            )}
+
+            {active === "rules" && (
+              <RefinableBlock
+                title="House Rules"
+                text={res.rules || ""}
+                onCopy={() => {
+                  copyText(res.rules || "");
+                  flash("rules");
+                }}
+                onDownload={() => downloadText(res.rules, "rules.txt")}
+                refine={(t) => regeneratePart("rules", t)}
+                options={["More concise", "Friendlier tone", "Stricter tone"]}
+              />
+            )}
+
+            {active === "photos" && (
+              <ListBlock
+                title="Photo captions"
+                items={res.photoCaptions || []}
+                onCopy={() => {
+                  copyList(res.photoCaptions, "");
+                  flash("photos");
+                }}
+                onDownload={() => downloadList(res.photoCaptions, "photo-captions.txt")}
+                onRegenerate={() => regeneratePart("photos")}
+                tip="Pair each caption with the matching image when you upload."
               />
             )}
 
             {active === "social" && (
-              <SocialBlock
-                social={res.social || {}}
-                onCopy={()=>copy([res.social?.x || "", res.social?.instagram || ""].filter(Boolean),"social")}
-                onDownload={()=>download([res.social?.x || "", res.social?.instagram || ""].filter(Boolean),"social.txt")}
-                onRegenerate={()=>onRegenerate("social")}
-                copied={copied==="social"}
-              />
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-medium">Social captions</h4>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => regeneratePart("social")}
+                      className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+                    >
+                      Regenerate
+                    </button>
+                    <button
+                      onClick={() => {
+                        copyText(
+                          [res.social?.x, res.social?.instagram].filter(Boolean).join("\n\n")
+                        );
+                        flash("social");
+                      }}
+                      className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+                    >
+                      {copied === "social" ? "Copied!" : "Copy"}
+                    </button>
+                  </div>
+                </div>
+                <Card label={`X (≤180) — ${res.social?.x?.length ?? 0}/180`} body={res.social?.x} />
+                <Card label={`Instagram — ${res.social?.instagram?.length ?? 0}`} body={res.social?.instagram} />
+              </div>
             )}
 
             {active === "seo" && (
               <ListBlock
-                title="SEO tags"
+                title="SEO keywords"
                 items={res.seo || []}
-                onCopy={()=>copy(res.seo,"seo")}
-                onDownload={()=>download(res.seo,"seo-tags.txt")}
-                onRegenerate={()=>onRegenerate("seo")}
-                copied={copied==="seo"}
+                onCopy={() => {
+                  copyText((res.seo || []).join(", "));
+                  flash("seo");
+                }}
+                onDownload={() =>
+                  downloadText((res.seo || []).join(", "), "seo-tags.txt")
+                }
+                onRegenerate={() => regeneratePart("seo")}
+                tip="Mix neighborhood + property-type + standout amenities."
               />
             )}
           </div>
@@ -510,192 +687,390 @@ export default function GenerateClient() {
   );
 }
 
-function label(k: TabKey) {
-  switch (k) {
-    case "description": return "Description";
-    case "titles": return "Titles";
-    case "highlights": return "Highlights";
-    case "sections": return "Sections";
-    case "social": return "Social";
-    case "seo": return "SEO";
-  }
+/** ---------- Small subcomponents ---------- */
+function Select({
+  label,
+  value,
+  onChange,
+  items,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  items: string[];
+}) {
+  return (
+    <div>
+      <label className="mb-1 block text-sm text-gray-300">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-md border border-gray-700 bg-transparent px-3 py-2 text-sm"
+      >
+        {items.map((t) => (
+          <option key={t} value={t} className="bg-black">
+            {t}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
 }
 
-function Block(props: {
+function Toggle({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-2">
+      <input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />
+      {label}
+    </label>
+  );
+}
+
+function Card({ label, body }: { label: string; body?: string }) {
+  return (
+    <div className="rounded-md border border-gray-700 p-2">
+      <div className="mb-1 text-xs text-gray-400">{label}</div>
+      <p className="text-gray-100">{body || "—"}</p>
+    </div>
+  );
+}
+/** Titles block for primary + A/B/C titles */
+function TitlesBlock({
+  primary,
+  titles,
+  onCopyPrimary,
+  onCopyAll,
+  onRegenerate,
+  platform,
+}: {
+  primary: string;
+  titles: string[];
+  onCopyPrimary: () => void;
+  onCopyAll: () => void;
+  onRegenerate: () => void;
+  platform: "Airbnb" | "VRBO" | "Booking";
+}) {
+  const limit = platform === "Airbnb" ? 32 : platform === "VRBO" ? 60 : 70;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h4 className="font-medium">Title (Primary + A/B/C)</h4>
+        <div className="flex items-center gap-2">
+          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+            Regenerate
+          </button>
+          <button onClick={onCopyAll} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+            Copy All
+          </button>
+        </div>
+      </div>
+
+      {/* Primary title */}
+      <div className="rounded-md border border-gray-700 p-2">
+        <div className="mb-1 flex items-center justify-between text-xs text-gray-400">
+          <span>Primary</span>
+          <span>{primary.length}/{limit}</span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className={`font-medium ${primary.length > limit ? "text-amber-400" : ""}`}>
+            {primary || "—"}
+          </span>
+          <button onClick={onCopyPrimary} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+            Copy
+          </button>
+        </div>
+      </div>
+
+      {/* Alternates */}
+      <div className="space-y-2">
+        {(titles || []).length ? (
+          titles.map((t, i) => (
+            <div key={i} className="rounded-md border border-gray-700 p-2">
+              <div className="mb-1 flex items-center justify-between text-xs text-gray-400">
+                <span>Alt {String.fromCharCode(65 + i)}</span>
+                <span>{t.length}/{limit}</span>
+              </div>
+              <span className={`font-medium ${t.length > limit ? "text-amber-400" : ""}`}>{t}</span>
+            </div>
+          ))
+        ) : (
+          <p className="text-sm text-gray-500">No alternate titles generated.</p>
+        )}
+      </div>
+
+      <p className="text-xs text-gray-400">
+        Tip: Airbnb truncates around ~32 characters—lead with your strongest concrete hook.
+      </p>
+    </div>
+  );
+}
+
+function RefinableBlock({
+  title,
+  text,
+  onCopy,
+  onDownload,
+  refine,
+  options,
+}: {
   title: string;
-  body: string;
+  text: string;
   onCopy: () => void;
   onDownload: () => void;
-  onRefine?: (tweak: string) => void;
-  refineOptions?: string[];
-  copied: boolean;
+  refine: (tweak: string) => void;
+  options: string[];
 }) {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="font-medium">{props.title}</h4>
+        <h4 className="font-medium">{title}</h4>
         <div className="flex items-center gap-2">
-          {props.refineOptions?.length ? (
-            <select
-              className="rounded-md border border-gray-700 bg-transparent px-2 py-1 text-xs"
-              onChange={(e) => e.target.value && props.onRefine?.(e.target.value)}
-              defaultValue=""
-            >
-              <option value="" className="bg-black">Refine…</option>
-              {props.refineOptions.map(o => <option key={o} value={o} className="bg-black">{o}</option>)}
-            </select>
-          ) : null}
-          <button onClick={props.onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            {props.copied ? "Copied!" : "Copy"}
+          <select
+            className="rounded-md border border-gray-700 bg-transparent px-2 py-1 text-xs"
+            onChange={(e) => e.target.value && refine(e.target.value)}
+            defaultValue=""
+          >
+            <option value="" className="bg-black">
+              Refine…
+            </option>
+            {options.map((o) => (
+              <option key={o} value={o} className="bg-black">
+                {o}
+              </option>
+            ))}
+          </select>
+          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+            Copy
           </button>
-          <button onClick={props.onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Download</button>
+          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+            Download
+          </button>
         </div>
       </div>
       <article className="leading-7 text-gray-100">
-        {props.body
-          ? props.body.split("\n\n").map((p, i) => <p key={i} className="mb-2">{p}</p>)
-          : <p className="text-sm text-gray-500">No content generated.</p>}
+        {text ? text.split("\n\n").map((p, i) => <p key={i} className="mb-2">{p}</p>) : <p className="text-sm text-gray-500">No content generated.</p>}
       </article>
     </div>
   );
 }
 
-function TitlesBlock(props: {
-  titles: string[];
-  platform: "Airbnb" | "VRBO" | "Booking";
+function SectionsBlock({
+  sections,
+  onCopy,
+  onDownload,
+  onRegenerate,
+}: {
+  sections: { space?: string; access?: string; notes?: string };
   onCopy: () => void;
   onDownload: () => void;
   onRegenerate: () => void;
-  copied: boolean;
 }) {
-  const limit = props.platform === "Airbnb" ? 32 : props.platform === "VRBO" ? 60 : 70;
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <h4 className="font-medium">Title (A/B/C)</h4>
-        <div className="flex items-center gap-2">
-          <button onClick={props.onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Regenerate</button>
-          <button onClick={props.onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            {props.copied ? "Copied!" : "Copy"}
-          </button>
-          <button onClick={props.onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Download</button>
-        </div>
-      </div>
-      {props.titles.length ? (
-        <ul className="space-y-2">
-          {props.titles.map((t, i)=>(
-            <li key={i} className="rounded-md border border-gray-700 p-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium">{t}</span>
-                <span className={`text-xs ${t.length > limit ? "text-amber-400" : "text-gray-400"}`}>{t.length}/{limit}</span>
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : <p className="text-sm text-gray-500">No titles generated.</p>}
-      <p className="text-xs text-gray-400">Tip: Airbnb truncates around ~32 characters—favor concrete hooks.</p>
-    </div>
-  );
-}
-
-function ListBlock(props: {
-  title: string;
-  items: string[];
-  onCopy: () => void;
-  onDownload: () => void;
-  onRegenerate: () => void;
-  copied: boolean;
-}) {
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <h4 className="font-medium">{props.title}</h4>
-        <div className="flex items-center gap-2">
-          <button onClick={props.onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Regenerate</button>
-          <button onClick={props.onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            {props.copied ? "Copied!" : "Copy"}
-          </button>
-          <button onClick={props.onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Download</button>
-        </div>
-      </div>
-      {props.items.length ? (
-        <ul className="list-disc pl-5 leading-7 text-gray-100">
-          {props.items.map((t, i) => <li key={i}>{t}</li>)}
-        </ul>
-      ) : <p className="text-sm text-gray-500">No items generated.</p>}
-    </div>
-  );
-}
-
-function SectionsBlock(props: {
-  sections: Sections;
-  onCopy: () => void;
-  onDownload: () => void;
-  onRegenerate: () => void;
-  copied: boolean;
-}) {
-  const { space, access, notes } = props.sections || {};
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <h4 className="font-medium">Airbnb sections</h4>
         <div className="flex items-center gap-2">
-          <button onClick={props.onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Regenerate</button>
-          <button onClick={props.onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">{props.copied ? "Copied!" : "Copy"}</button>
-          <button onClick={props.onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Download</button>
+          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+            Regenerate
+          </button>
+          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+            Copy
+          </button>
+          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+            Download
+          </button>
         </div>
       </div>
       <article className="space-y-3 leading-7 text-gray-100">
         <div>
           <h5 className="font-medium">The Space</h5>
-          <p className="text-gray-100">{space || "—"}</p>
+          <p>{sections.space || "—"}</p>
         </div>
         <div>
           <h5 className="font-medium">Guest Access</h5>
-          <p className="text-gray-100">{access || "—"}</p>
+          <p>{sections.access || "—"}</p>
         </div>
         <div>
           <h5 className="font-medium">Other Things to Note</h5>
-          <p className="text-gray-100">{notes || "—"}</p>
+          <p>{sections.notes || "—"}</p>
         </div>
       </article>
     </div>
   );
 }
 
-function SocialBlock(props: {
-  social: { x?: string; instagram?: string };
+function ListBlock({
+  title,
+  items,
+  onCopy,
+  onDownload,
+  onRegenerate,
+  tip,
+}: {
+  title: string;
+  items: string[];
   onCopy: () => void;
   onDownload: () => void;
   onRegenerate: () => void;
-  copied: boolean;
+  tip?: string;
 }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <h4 className="font-medium">Social captions</h4>
+        <h4 className="font-medium">{title}</h4>
         <div className="flex items-center gap-2">
-          <button onClick={props.onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Regenerate</button>
-          <button onClick={props.onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            {props.copied ? "Copied!" : "Copy"}
+          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+            Regenerate
           </button>
-          <button onClick={props.onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Download</button>
+          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+            Copy
+          </button>
+          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+            Download
+          </button>
         </div>
       </div>
-      <div className="space-y-2">
-        <div className="rounded-md border border-gray-700 p-2">
-          <div className="mb-1 flex items-center justify-between text-xs text-gray-400">
-            <span>X (≤180)</span><span>{props.social.x?.length ?? 0}/180</span>
-          </div>
-          <p className="text-gray-100">{props.social.x || "—"}</p>
-        </div>
-        <div className="rounded-md border border-gray-700 p-2">
-          <div className="mb-1 flex items-center justify-between text-xs text-gray-400">
-            <span>Instagram</span><span>{props.social.instagram?.length ?? 0}</span>
-          </div>
-          <p className="text-gray-100">{props.social.instagram || "—"}</p>
-        </div>
-      </div>
+      {items.length ? (
+        <ul className="list-disc pl-5 leading-7 text-gray-100">
+          {items.map((t, i) => (
+            <li key={i}>{t}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-gray-500">No items generated.</p>
+      )}
+      {tip && <p className="text-xs text-gray-400">{tip}</p>}
     </div>
   );
+}
+
+/** Simple “looks like Airbnb” preview */
+function PreviewPanel({ res }: { res: ResultPayload }) {
+  return (
+    <div className="rounded-lg border border-gray-700 p-4">
+      <div className="mb-2">
+        <h2 className="text-xl font-semibold">
+          {res.titlePrimary || res.titles?.[0] || "Your title will appear here"}
+        </h2>
+        <p className="text-sm text-gray-400">
+          {res.meta?.word_count ? `${res.meta.word_count} words` : ""}{" "}
+        </p>
+      </div>
+
+      {res.summary && (
+        <div className="mb-4">
+          <h3 className="mb-1 font-medium">Summary</h3>
+          <p className="text-gray-100">{res.summary}</p>
+        </div>
+      )}
+
+      {res.description && (
+        <div className="mb-4">
+          <h3 className="mb-1 font-medium">Description</h3>
+          <article className="leading-7 text-gray-100">
+            {res.description.split("\n\n").map((p, i) => (
+              <p key={i} className="mb-2">
+                {p}
+              </p>
+            ))}
+          </article>
+        </div>
+      )}
+
+      {!!res.highlights?.length && (
+        <div className="mb-4">
+          <h3 className="mb-1 font-medium">Highlights</h3>
+          <ul className="list-disc pl-5 text-gray-100">
+            {res.highlights.map((h, i) => (
+              <li key={i}>{h}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {(res.sections?.space || res.sections?.access || res.sections?.notes) && (
+        <div className="mb-4 grid gap-4 md:grid-cols-3">
+          {res.sections?.space && (
+            <div>
+              <h4 className="mb-1 font-medium">The Space</h4>
+              <p className="text-gray-100">{res.sections.space}</p>
+            </div>
+          )}
+          {res.sections?.access && (
+            <div>
+              <h4 className="mb-1 font-medium">Guest Access</h4>
+              <p className="text-gray-100">{res.sections.access}</p>
+            </div>
+          )}
+          {res.sections?.notes && (
+            <div>
+              <h4 className="mb-1 font-medium">Other Things to Note</h4>
+              <p className="text-gray-100">{res.sections.notes}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!!res.amenities?.length && (
+        <div className="mb-4">
+          <h3 className="mb-1 font-medium">Amenities</h3>
+          <div className="flex flex-wrap gap-2">
+            {res.amenities.map((a, i) => (
+              <span key={i} className="rounded-full border border-gray-700 px-2 py-1 text-xs text-gray-300">
+                {a}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {res.neighborhood && (
+        <div className="mb-4">
+          <h3 className="mb-1 font-medium">Neighborhood</h3>
+          <p className="text-gray-100">{res.neighborhood}</p>
+        </div>
+      )}
+
+      {res.rules && (
+        <div>
+          <h3 className="mb-1 font-medium">House Rules</h3>
+          <p className="text-gray-100">{res.rules}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** tiny helpers */
+function downloadText(text?: string, name = "text.txt") {
+  if (!text) return;
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+function downloadList(items?: string[], name = "list.txt") {
+  if (!items?.length) return;
+  downloadText(items.join("\n"), name);
+}
+function label(k: TabKey) {
+  const map: Record<TabKey, string> = {
+    preview: "Preview",
+    title: "Title",
+    summary: "Summary",
+    description: "Description",
+    highlights: "Highlights",
+    sections: "Sections",
+    amenities: "Amenities",
+    neighborhood: "Neighborhood",
+    rules: "Rules",
+    photos: "Photo captions",
+    social: "Social",
+    seo: "SEO",
+  };
+  return map[k];
 }
