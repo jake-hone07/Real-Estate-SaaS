@@ -7,7 +7,7 @@ export type PlanDef = {
   name: string;          // Display name
   credits: number;       // Credits granted per purchase/billing cycle (0 for Premium/unlimited)
   priceId: string;       // Stripe Price ID (price_...)
-  priceLabel: string;    // UI label (e.g., "$9", "$29/mo")
+  priceLabel: string;    // UI label (e.g., "$9.99", "$29.99/mo")
   mode: PlanMode;        // 'payment' (one-time) or 'subscription'
 };
 
@@ -32,14 +32,14 @@ const INTERNAL_PLANS: Record<PlanKey, PlanDef> = {
     name: 'Starter',
     credits: STARTER_MONTHLY_CREDITS,
     priceId: anyEnv('STARTER_PRICE_ID', 'NEXT_PUBLIC_STARTER_PRICE_ID'),
-    priceLabel: '$9/mo',
+    priceLabel: '$9.99/mo',
     mode: 'subscription',
   },
   Premium: {
     name: 'Premium',
     credits: 0, // unlimited (no monthly grant)
     priceId: anyEnv('PREMIUM_PRICE_ID', 'NEXT_PUBLIC_PREMIUM_PRICE_ID'),
-    priceLabel: '$29/mo',
+    priceLabel: '$29.99/mo',
     mode: 'subscription',
   },
   Coins: {

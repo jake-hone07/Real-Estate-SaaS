@@ -1,107 +1,103 @@
-// app/api/generate/route.ts
-// Generation endpoint with credit checks for Starter/None and soft caps for Premium.
-import { NextResponse } from 'next/server';
+// /app/api/generate/route.ts
+import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
+import { createClient } from '@supabase/supabase-js';
 
-export const runtime = 'nodejs';
+type GenerateBody = { title?: string; prompt?: string; [k: string]: any };
 
-// Soft cap for Premium (fair use)
-const PREMIUM_DAILY_SOFT_CAP = 300; // requests/day
-// Optionally: const PREMIUM_PER_MIN_SOFT_CAP = 30;
+export async function POST(req: NextRequest) {
+  const userClient = createRouteHandlerClient({ cookies });
 
-type GenerateRequest = {
-  title?: string;
-  propertyFacts?: Record<string, any>;
-  prompt?: string;
-};
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  if (!url || !serviceKey) {
+    return NextResponse.json({ error: 'Missing Supabase env' }, { status: 500 });
+  }
+  const admin = createClient(url, serviceKey);
 
-type GenerateResult = {
-  output: string;
-  meta?: Record<string, any>;
-};
+  // Auth
+  const { data: auth } = await userClient.auth.getUser();
+  const user = auth?.user;
+  if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
-// Replace with your real generation logic
-async function generateListing(input: GenerateRequest): Promise<GenerateResult> {
-  const summary = input.title
-    ? `Generated listing for: ${input.title}`
-    : 'Generated listing.';
-  return {
-    output: `${summary}\n\n(This is a placeholder. Wire your real generator here.)`,
-    meta: { placeholder: true },
-  };
-}
+  // Inputs
+  const body: GenerateBody = await req.json().catch(() => ({}));
+  const title = body?.title?.trim() || 'Untitled Listing';
+  const prompt = (body?.prompt ?? '').toString().trim();
 
-export async function POST(req: Request) {
-  try {
-    const supabase = createRouteHandlerClient<any>({ cookies });
+  // Ledger balance (admin bypasses RLS)
+  const { data: rows, error: sumErr } = await admin
+    .from('credit_ledger')
+    .select('delta')
+    .eq('user_id', user.id);
+  if (sumErr) return NextResponse.json({ error: sumErr.message }, { status: 500 });
 
-    // Auth
-    const { data: auth } = await supabase.auth.getUser();
-    const user = auth?.user;
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const balance = (rows || []).reduce((n, r: any) => n + Number(r?.delta ?? 0), 0);
+  if (balance < 1) return NextResponse.json({ error: 'Not enough credits' }, { status: 402 });
 
-    // Parse
-    const payload = (await req.json().catch(() => ({}))) as GenerateRequest;
+  // Debit first (idempotent by external_id)
+  const requestId = crypto.randomUUID();
+  const { data: existing, error: existErr } = await admin
+    .from('credit_ledger')
+    .select('id')
+    .eq('user_id', user.id)
+    .eq('external_id', requestId)
+    .maybeSingle();
+  if (existErr) return NextResponse.json({ error: existErr.message }, { status: 500 });
 
-    // Read plan & balance
-    const [{ data: profile }, { data: balRow }] = await Promise.all([
-      supabase.from('profiles').select('plan_key').eq('id', user.id).maybeSingle(),
-      supabase.from('credits_balance').select('balance').eq('user_id', user.id).maybeSingle(),
-    ]);
-
-    const planKey = (profile?.plan_key as string | null) ?? null;
-
-    if (planKey === 'Premium') {
-      // Soft daily cap for Premium
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const { count } = await supabase
-        .from('credits_ledger')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', user.id)
-        .eq('reason', 'generation')
-        .gte('created_at', since);
-
-      if ((count ?? 0) >= PREMIUM_DAILY_SOFT_CAP) {
-        return NextResponse.json(
-          { error: 'You reached today’s fair-use limit on Premium. Try again later.' },
-          { status: 429 }
-        );
-      }
-
-      // Generate (no credit decrement)
-      const result = await generateListing(payload);
-      // Optionally record a zero-cost usage marker (not required). We’ll keep it simple.
-
-      return NextResponse.json({ ok: true, plan: 'Premium', result }, { status: 200 });
-    }
-
-    // Starter / None: require credits > 0
-    const balance = balRow?.balance ?? 0;
-    if (balance <= 0) {
-      return NextResponse.json({ error: 'Out of credits' }, { status: 402 });
-    }
-
-    // Do the work
-    const result = await generateListing(payload);
-
-    // Decrement credits (-1)
-    const { error: decErr } = await supabase.from('credits_ledger').insert({
+  if (!existing) {
+    const { error: debitErr } = await admin.from('credit_ledger').insert({
       user_id: user.id,
       delta: -1,
       reason: 'generation',
+      external_id: requestId,
+      metadata: { route: '/api/generate', title }
     });
-    if (decErr) {
-      console.error('[generate] credit decrement failed:', decErr.message);
-      return NextResponse.json({ error: 'Billing error' }, { status: 500 });
-    }
-
-    return NextResponse.json(
-      { ok: true, plan: planKey ?? 'None', credits_left: balance - 1, result },
-      { status: 200 }
-    );
-  } catch (e: any) {
-    console.error('[generate] unhandled error:', e?.message || e);
-    return NextResponse.json({ error: 'Internal error' }, { status: 500 });
+    if (debitErr) return NextResponse.json({ error: `Could not debit: ${debitErr.message}` }, { status: 500 });
   }
+
+  // Do the generation (stub — replace with your model)
+  let generatedText: string | null = null;
+  try {
+    generatedText = prompt
+      ? `Generated listing based on your input:\n\n${prompt}\n\n— ListingForge`
+      : `Generated listing placeholder. (Add your model call here.)\n\n— ListingForge`;
+  } catch (e: any) {
+    await admin.from('credit_ledger').insert({
+      user_id: user.id,
+      delta: +1,
+      reason: 'refund_generation_failed',
+      external_id: `${requestId}-refund`,
+      metadata: { route: '/api/generate' }
+    });
+    return NextResponse.json({ error: 'Generation failed' }, { status: 500 });
+  }
+
+  if (!generatedText) {
+    await admin.from('credit_ledger').insert({
+      user_id: user.id,
+      delta: +1,
+      reason: 'refund_generation_failed',
+      external_id: `${requestId}-refund`,
+      metadata: { route: '/api/generate' }
+    });
+    return NextResponse.json({ error: 'No content generated' }, { status: 500 });
+  }
+
+  // Save as the user (RLS-respecting)
+  const { data: inserted, error: insErr } = await userClient
+    .from('listings')
+    .insert({ user_id: user.id, title, description: generatedText })
+    .select('*')
+    .single();
+
+  // return text even if save fails (don’t burn user’s result)
+  return NextResponse.json({
+    ok: true,
+    listing: generatedText,
+    saved: inserted ?? null,
+    debited: 1,
+    requestId
+  });
 }

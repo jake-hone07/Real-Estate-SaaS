@@ -1,148 +1,178 @@
-// app/api/stripe/webhook/route.ts
-import { NextResponse } from 'next/server';
+// @ts-nocheck
+import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
-import { STARTER_MONTHLY_CREDITS, COINS_TOPUP_CREDITS } from '@/lib/billing';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs'; // needed for signature verification with req.text()
 
-function anyEnv(...names: string[]): string {
-  for (const n of names) {
-    const v = process.env[n];
-    if (v && v.trim() !== '') return v.trim();
-  }
-  throw new Error(`Missing env: one of [${names.join(', ')}]`);
-}
+// ---- Setup ----
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-06-20' as any });
 
-const stripe = new Stripe(anyEnv('STRIPE_SECRET_KEY'));
-
-// Service-role client (bypasses RLS). Prefer SUPABASE_URL if present.
-const admin = createClient(
-  anyEnv('SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'XT_PUBLIC_SUPABASE_URL'),
-  anyEnv('SUPABASE_SERVICE_ROLE_KEY')
+const ADMIN = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-async function grantCredits(userId: string, amount: number, reason: string, invoiceId?: string) {
-  if (!amount) return;
-  const { error } = await admin.from('credits_ledger').insert({
+// LIVE price IDs from env
+const STARTER_PRICE_ID = process.env.STARTER_PRICE_ID;
+const PREMIUM_PRICE_ID = process.env.PREMIUM_PRICE_ID;
+const COINS_PRICE_ID   = process.env.COINS_PRICE_ID;
+
+// Credits config
+const STARTER_MONTHLY_CREDITS = Number(process.env.STARTER_MONTHLY_CREDITS ?? 25);
+const PREMIUM_MONTHLY_CREDITS = Number(process.env.PREMIUM_MONTHLY_CREDITS ?? 0);
+const COINS_CREDITS           = Number(process.env.COINS_CREDITS ?? 15);
+
+// ---- Helpers ----
+async function creditLedger(userId, delta, reason, externalId, metadata = null) {
+  await ADMIN.from('credit_ledger').insert({
     user_id: userId,
-    delta: amount,
+    delta,
     reason,
-    stripe_invoice_id: invoiceId ?? null,
+    external_id: externalId, // idempotent key (Stripe event id)
+    metadata,
   });
-  if (error) console.error('[webhook] grantCredits error:', error.message);
 }
 
-export async function POST(req: Request) {
+async function upsertSubscriptionRow({
+  userId,
+  plan,
+  status,
+  stripeCustomerId,
+  stripeSubscriptionId,
+  currentPeriodEnd,
+}) {
+  if (!userId) return;
+  await ADMIN.from('subscriptions').upsert(
+    {
+      user_id: userId,
+      plan: plan ?? null,
+      status: status ?? null,
+      stripe_customer_id: stripeCustomerId ?? null,
+      stripe_subscription_id: stripeSubscriptionId ?? null,
+      current_period_end: currentPeriodEnd ? new Date(currentPeriodEnd).toISOString() : null,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'user_id' }
+  );
+}
+
+export async function POST(req: NextRequest) {
+  const rawBody = await req.text();
   const sig = req.headers.get('stripe-signature');
-  const secret = anyEnv('STRIPE_WEBHOOK_SECRET');
-  if (!sig) {
-    console.error('[webhook] missing signature');
-    return NextResponse.json({ received: true }, { status: 400 });
-  }
 
   let event: Stripe.Event;
   try {
-    const raw = await req.text();
-    event = stripe.webhooks.constructEvent(raw, sig, secret);
+    event = stripe.webhooks.constructEvent(rawBody, sig!, process.env.STRIPE_WEBHOOK_SECRET!);
   } catch (e: any) {
-    console.error('[webhook] constructEvent error:', e?.message || e);
-    return new NextResponse('Invalid signature', { status: 400 });
+    return NextResponse.json({ error: `Bad signature: ${e.message}` }, { status: 400 });
   }
 
   try {
     switch (event.type) {
+      // ----------------- COINS & initial subscription checkout -----------------
       case 'checkout.session.completed': {
-        const s = event.data.object as Stripe.Checkout.Session;
-        const userId = s.metadata?.supabase_user_id;
-        const planKey = s.metadata?.plan_key; // 'Starter' | 'Premium' | 'Coins'
-        if (!userId || !planKey) break;
+        const s: any = event.data.object;
 
-        if (s.mode === 'payment' && planKey === 'Coins') {
-          // 1) Top-up purchase: grant instantly; do NOT change plan
-          await grantCredits(userId, COINS_TOPUP_CREDITS, 'purchase:Coins', (s.invoice as string) ?? undefined);
-        } else if (s.mode === 'subscription') {
-          // 2) Subscriptions: set plan on profile
-          await admin.from('profiles').update({ plan_key: planKey }).eq('id', userId);
+        const userId =
+          s?.metadata?.user_id || s?.client_reference_id || null;
+        const sku = String(s?.metadata?.sku || '').toLowerCase();
+        const credits = Number(s?.metadata?.credits || 0);
 
-          // Starter could optionally get an initial grant here; we keep it to invoice.paid
-          // Add a subscriptions row linkage right away
-          if (s.subscription) {
-            const subId = typeof s.subscription === 'string' ? s.subscription : s.subscription.id;
-            await admin.from('subscriptions').upsert(
-              {
-                user_id: userId,
-                stripe_subscription_id: subId,
-                plan_key: planKey,
-                status: 'active',
-              },
-              { onConflict: 'stripe_subscription_id' }
-            );
+        if (s?.mode === 'payment' && userId && credits > 0) {
+          // One-time coins purchase
+          await creditLedger(userId, credits, 'stripe_purchase', event.id, {
+            session_id: s?.id,
+            sku,
+          });
+        }
+
+        if (s?.mode === 'subscription' && userId) {
+          // Create a basic row now; invoice/subscription.updated refine it later
+          const plan = sku === 'starter' ? 'starter' : sku === 'premium' ? 'premium' : null;
+          await upsertSubscriptionRow({
+            userId,
+            plan,
+            status: 'active',
+            stripeCustomerId: String(s?.customer || ''),
+            stripeSubscriptionId: String(s?.subscription || ''),
+            currentPeriodEnd: null,
+          });
+        }
+        break;
+      }
+
+      // ----------------- Subscription invoices (monthly credits) -----------------
+      case 'invoice.payment_succeeded': {
+        const inv: any = event.data.object;
+
+        const line = inv?.lines?.data?.[0] || {};
+        const priceId = line?.price?.id || null;
+        const plan =
+          priceId === STARTER_PRICE_ID ? 'starter' :
+          priceId === PREMIUM_PRICE_ID ? 'premium' : null;
+
+        const subId = String(inv?.subscription || '') || null;
+
+        let userId: string | null = null;
+        let periodEnd: number | null = null;
+
+        if (subId) {
+          const sub: any = await stripe.subscriptions.retrieve(subId);
+          userId = sub?.metadata?.user_id || null;
+          periodEnd = (sub?.current_period_end ?? null) ? sub.current_period_end * 1000 : null;
+
+          await upsertSubscriptionRow({
+            userId,
+            plan,
+            status: sub?.status || null,
+            stripeCustomerId: String(sub?.customer || ''),
+            stripeSubscriptionId: sub?.id || null,
+            currentPeriodEnd: periodEnd,
+          });
+        }
+
+        if (userId && plan) {
+          const grant = plan === 'starter' ? STARTER_MONTHLY_CREDITS : PREMIUM_MONTHLY_CREDITS;
+          if (grant > 0) {
+            await creditLedger(userId, grant, 'stripe_subscription_monthly_credit', event.id, {
+              invoice_id: inv?.id,
+              subscription_id: subId,
+              plan,
+            });
           }
         }
         break;
       }
 
-      case 'invoice.paid': {
-        // Recurring monthly grants for Starter only
-        const invoice = event.data.object as Stripe.Invoice;
-        const subId = (invoice as any).subscription as string | null | undefined;
-        if (!subId) break;
-
-        const { data: subRow } = await admin
-          .from('subscriptions')
-          .select('user_id, plan_key')
-          .eq('stripe_subscription_id', subId)
-          .maybeSingle();
-
-        if (subRow?.user_id && subRow?.plan_key === 'Starter') {
-          await grantCredits(subRow.user_id, STARTER_MONTHLY_CREDITS, 'monthly:Starter', invoice.id);
-        }
-        // Premium gets no credits (unlimited handled by rate limits)
-        break;
-      }
-
-      case 'customer.subscription.created':
+      // ----------------- Keep subscription row in sync -----------------
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted': {
-        const sub = event.data.object as Stripe.Subscription;
-        const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
+        const sub: any = event.data.object;
 
-        const cust = await stripe.customers.retrieve(customerId);
-        const userId =
-          typeof cust !== 'string' && 'metadata' in cust
-            ? (cust as any)?.metadata?.supabase_user_id
-            : undefined;
-        if (!userId) break;
+        const itemPriceId = sub?.items?.data?.[0]?.price?.id || null;
+        const plan =
+          itemPriceId === STARTER_PRICE_ID ? 'starter' :
+          itemPriceId === PREMIUM_PRICE_ID ? 'premium' : null;
 
-        const planKey = (sub.metadata?.plan_key as string | undefined) ?? undefined;
-        const cpeUnix = (sub as any).current_period_end as number | undefined;
-        const cpeIso = cpeUnix ? new Date(cpeUnix * 1000).toISOString() : null;
-
-        const payload: any = {
-          user_id: userId,
-          stripe_subscription_id: sub.id,
-          status: sub.status,
-        };
-        if (planKey) payload.plan_key = planKey;
-        if (cpeIso) payload.current_period_end = cpeIso;
-
-        await admin.from('subscriptions').upsert(payload, { onConflict: 'stripe_subscription_id' });
-
-        if (planKey) {
-          await admin.from('profiles').update({ plan_key: planKey }).eq('id', userId);
-        }
+        await upsertSubscriptionRow({
+          userId: sub?.metadata?.user_id || null,
+          plan,
+          status: sub?.status || null,
+          stripeCustomerId: String(sub?.customer || ''),
+          stripeSubscriptionId: sub?.id || null,
+          currentPeriodEnd: (sub?.current_period_end ?? null) ? sub.current_period_end * 1000 : null,
+        });
         break;
       }
 
       default:
+        // ignore other events
         break;
     }
 
-    return NextResponse.json({ received: true }, { status: 200 });
+    return NextResponse.json({ received: true });
   } catch (e: any) {
-    console.error('[webhook] handler error:', e?.message || e);
-    return NextResponse.json({ received: true }, { status: 200 });
+    return NextResponse.json({ error: e?.message || 'webhook error' }, { status: 500 });
   }
 }

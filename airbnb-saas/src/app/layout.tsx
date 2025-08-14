@@ -1,5 +1,7 @@
 import './globals.css';
 import type { Metadata } from 'next';
+import Providers from './providers';
+import AppHeader from '@/components/AppHeader';
 
 export const metadata: Metadata = {
   title: 'Your App',
@@ -10,26 +12,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="min-h-screen bg-white text-zinc-900 antialiased">
-        <Header />
-        <main className="min-h-[70vh]">{children}</main>
-        <Footer />
+        <Providers>
+          <AppHeader />
+          <main className="min-h-[70vh]">{children}</main>
+          <Footer />
+        </Providers>
       </body>
     </html>
-  );
-}
-
-function Header() {
-  return (
-    <header className="border-b">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
-        <a href="/" className="text-lg font-semibold">🏠 YourBrand</a>
-        <nav className="flex items-center gap-4 text-sm">
-          <a href="/pricing" className="hover:underline">Pricing</a>
-          <a href="/generate" className="hover:underline">Generate</a>
-          <a href="/support" className="hover:underline">Support</a>
-        </nav>
-      </div>
-    </header>
   );
 }
 

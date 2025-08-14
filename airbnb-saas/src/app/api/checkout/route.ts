@@ -1,149 +1,86 @@
-// app/api/checkout/route.ts
-import { NextResponse } from 'next/server';
+// /app/api/checkout/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import Stripe from 'stripe';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import Stripe from 'stripe';
-import { getPlan } from '@/lib/billing';
 
-export const runtime = 'nodejs';
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-06-20' as any });
 
-function mustEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v.trim();
-}
+// Your env var names
+const STARTER_PRICE_ID = process.env.STARTER_PRICE_ID;   // e.g. price_1Rv21j...
+const PREMIUM_PRICE_ID = process.env.PREMIUM_PRICE_ID;   // e.g. price_1Rv22n...
+const COINS_PRICE_ID   = process.env.COINS_PRICE_ID;     // e.g. price_1RukkO...
 
-function absUrl(req: Request, path: string) {
-  const base = (process.env.NEXT_PUBLIC_APP_URL || '').trim().replace(/\/+$/, '');
-  if (base && /^https?:\/\//i.test(base)) return new URL(path, base + '/').toString();
-  return new URL(path, new URL(req.url).origin).toString();
-}
+// how many credits a coins purchase adds
+const COINS_CREDITS = 15;
 
-const stripe = new Stripe(mustEnv('STRIPE_SECRET_KEY'));
+type Plan = { priceId?: string; mode: 'subscription' | 'payment'; credits?: number; name: string };
 
-type Body = { planKey?: string };
-
-async function ensureStripeCustomer(opts: {
-  supabase: ReturnType<typeof createRouteHandlerClient<any>>;
-  userId: string;
-  email?: string;
-}) {
-  const { supabase, userId, email } = opts;
-
-  const { data: profile, error: readErr } = await supabase
-    .from('profiles')
-    .select('stripe_customer_id, email')
-    .eq('id', userId)
-    .maybeSingle();
-  if (readErr) console.warn('[checkout] profile read:', readErr.message);
-
-  const existing = profile?.stripe_customer_id;
-  if (existing) {
-    try {
-      await stripe.customers.retrieve(existing);
-      return existing;
-    } catch {
-      console.warn('[checkout] saved customer not found in Stripe, recreating…');
-    }
-  }
-
-  const created = await stripe.customers.create({
-    email: email ?? profile?.email ?? undefined,
-    metadata: { supabase_user_id: userId },
-  });
-
-  const { error: upErr } = await supabase
-    .from('profiles')
-    .update({ stripe_customer_id: created.id })
-    .eq('id', userId);
-
-  if (upErr) {
-    const { error: upsertErr } = await supabase
-      .from('profiles')
-      .upsert({ id: userId, stripe_customer_id: created.id }, { onConflict: 'id' });
-    if (upsertErr) console.warn('[checkout] profile upsert:', upsertErr.message);
-  }
-
-  return created.id;
-}
-
-async function createSession(req: Request, planKey: string) {
-  const supabase = createRouteHandlerClient<any>({ cookies });
-  const { data: auth } = await supabase.auth.getUser();
-  const user = auth?.user;
-  if (!user) return { error: NextResponse.json({ error: 'Not authenticated' }, { status: 401 }) };
-
-  const planResult = getPlan(planKey);
-  if (!planResult?.def) {
-    return { error: NextResponse.json({ error: 'Invalid plan' }, { status: 400 }) };
-  }
-  const { key, def } = planResult;
-
-  if (!def.priceId) {
-    return { error: NextResponse.json({ error: 'Plan is missing Stripe priceId' }, { status: 500 }) };
-  }
-
-  const customerId = await ensureStripeCustomer({
-    supabase,
-    userId: user.id,
-    email: user.email ?? undefined,
-  });
-
-  const successUrl = absUrl(req, '/billing?checkout=success');
-  const cancelUrl = absUrl(req, '/billing?checkout=canceled');
-
-  const session = await stripe.checkout.sessions.create({
-    mode: def.mode, // 'payment' | 'subscription'
-    customer: customerId,
-    line_items: [{ price: def.priceId, quantity: 1 }],
-    success_url: successUrl,
-    cancel_url: cancelUrl,
-    allow_promotion_codes: true,
-    automatic_tax: { enabled: false },
-    metadata: {
-      supabase_user_id: user.id,
-      plan_key: key,     // 'Starter' | 'Premium' | 'Coins'
-      plan_name: def.name,
-    },
-  });
-
-  return { session };
-}
-
-// POST: JSON { planKey } → { id, url }
-export async function POST(req: Request) {
-  try {
-    const body = (await req.json().catch(() => null)) as Body | null;
-    const planKey = body?.planKey;
-    if (!planKey) return NextResponse.json({ error: 'Missing planKey' }, { status: 400 });
-
-    const { error, session } = await createSession(req, planKey);
-    if (error) return error;
-    return NextResponse.json({ id: session!.id, url: session!.url }, { status: 200 });
-  } catch (e: any) {
-    console.error('[checkout POST] error:', e?.message || e);
-    return NextResponse.json(
-      { error: 'Unexpected error creating checkout session.' },
-      { status: 500 }
-    );
-  }
-}
-
-// GET: /api/checkout?planKey=Starter → 302 redirect
-export async function GET(req: Request) {
+export async function GET(req: NextRequest) {
   try {
     const url = new URL(req.url);
-    const planKey = url.searchParams.get('planKey') || undefined;
-    if (!planKey) return NextResponse.json({ error: 'Missing planKey' }, { status: 400 });
+    const sku = (url.searchParams.get('sku') || '').toLowerCase();
 
-    const { error, session } = await createSession(req, planKey);
-    if (error) return error;
-    return NextResponse.redirect(session!.url!, { status: 302 });
+    const supabase = createRouteHandlerClient({ cookies });
+    const { data: auth } = await supabase.auth.getUser();
+    const user = auth?.user;
+    if (!user) return NextResponse.redirect(new URL('/login', url.origin));
+
+    // ✅ stable base URL for Stripe return links
+    const baseUrl =
+      process.env.NEXT_PUBLIC_SITE_URL ||
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : url.origin);
+
+    const map: Record<string, Plan> = {
+      starter:  { priceId: STARTER_PRICE_ID,  mode: 'subscription', name: 'starter' },
+      premium:  { priceId: PREMIUM_PRICE_ID,  mode: 'subscription', name: 'premium' },
+      coins:    { priceId: COINS_PRICE_ID,    mode: 'payment',      credits: COINS_CREDITS, name: 'coins' },
+      topup15:  { priceId: COINS_PRICE_ID,    mode: 'payment',      credits: COINS_CREDITS, name: 'coins' }, // alias
+    };
+
+    const plan = map[sku];
+    if (!plan) {
+      return NextResponse.json({ error: 'Unknown sku. Use one of: starter, premium, coins.' }, { status: 400 });
+    }
+    if (!plan.priceId) {
+      return NextResponse.json(
+        { error: `Price ID not configured for "${sku}". Set ${envNameForSku(sku)} in your env.` },
+        { status: 500 }
+      );
+    }
+
+    const customer = await ensureCustomerByEmail(user.email!);
+
+    const session = await stripe.checkout.sessions.create({
+      mode: plan.mode,
+      customer: customer?.id,
+      customer_email: customer ? undefined : user.email!,
+      client_reference_id: user.id,
+      success_url: `${baseUrl}/billing?success=1`,
+      cancel_url: `${baseUrl}/billing?canceled=1`,
+      metadata: {
+        user_id: user.id,
+        sku: plan.name,
+        credits: plan.credits ? String(plan.credits) : '',
+      },
+      line_items: [{ price: plan.priceId, quantity: 1 }],
+    });
+
+    return NextResponse.redirect(session.url!, { status: 303 });
   } catch (e: any) {
-    console.error('[checkout GET] error:', e?.message || e);
-    return NextResponse.json(
-      { error: 'Unexpected error creating checkout session.' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: e?.message || 'checkout failed' }, { status: 500 });
   }
+}
+
+function envNameForSku(sku: string) {
+  if (sku === 'starter') return 'STARTER_PRICE_ID';
+  if (sku === 'premium') return 'PREMIUM_PRICE_ID';
+  if (sku === 'coins' || sku === 'topup15') return 'COINS_PRICE_ID';
+  return 'PRICE_ID';
+}
+
+async function ensureCustomerByEmail(email: string) {
+  const list = await stripe.customers.list({ email, limit: 1 });
+  if (list.data[0]) return list.data[0];
+  return stripe.customers.create({ email });
 }

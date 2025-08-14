@@ -1,283 +1,155 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useEffect, useState } from 'react';
+import { useSession, useSessionContext } from '@supabase/auth-helpers-react';
+import { useRouter } from 'next/navigation';
+import { supabase as clientSupabase } from '@/lib/supabase';
 
-type Plan = 'free' | 'starter' | 'premium';
-type Profile = { plan: Plan; credits: number | null } | null;
-type Listing = {
-  id: string;
-  title: string | null;
-  template: string | null;
-  description?: string; // preferred
-  output?: string;      // fallback
-  created_at: string;
-};
+type CreditResp = { balance: number } | { error: string };
 
 export default function DashboardPage() {
-  const [profile, setProfile] = useState<Profile>(null);
-  const [recent, setRecent] = useState<Listing[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [portalLoading, setPortalLoading] = useState(false);
+  const session = useSession();
+  const { isLoading } = useSessionContext();
+  const router = useRouter();
+
+  const [credits, setCredits] = useState<number | null>(null);
+  const [loadingCredits, setLoadingCredits] = useState(true);
+
+  const [listings, setListings] = useState<any[]>([]);
+  const [loadingListings, setLoadingListings] = useState(true);
 
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const [pRes, lRes] = await Promise.all([
-          fetch('/api/me/profile'),
-          fetch('/api/listings?limit=5'),
-        ]);
+    if (!isLoading && !session) router.replace('/login');
+  }, [isLoading, session, router]);
 
-        // Profile
-        if (pRes.ok) {
-          const p = await pRes.json();
-          if (alive) setProfile(p?.data ?? null);
-        } else {
-          setErr('Could not load profile');
-        }
+  const fetchCredits = async () => {
+    setLoadingCredits(true);
+    try {
+      const res = await fetch('/api/credits', { cache: 'no-store' });
+      const json = (await res.json()) as CreditResp;
+      if (!res.ok || 'error' in json) throw new Error((json as any)?.error || `HTTP ${res.status}`);
+      setCredits((json as any).balance ?? 0);
+    } catch {
+      setCredits(null);
+    } finally {
+      setLoadingCredits(false);
+    }
+  };
 
-        // Recent
-        if (lRes.ok) {
-          const l = await lRes.json();
-          if (alive) setRecent(Array.isArray(l?.data) ? l.data : []);
-        } else {
-          setErr((e) => e ?? 'Could not load listings');
-        }
-      } catch {
-        setErr('Network error. Please refresh.');
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
+  const fetchListings = async () => {
+    setLoadingListings(true);
+    const { data } = await clientSupabase
+      .from('listings')
+      .select('id, title, description, created_at')
+      .order('created_at', { ascending: false })
+      .limit(20);
+    setListings(data || []);
+    setLoadingListings(false);
+  };
+
+  useEffect(() => {
+    if (!isLoading && session?.user) {
+      fetchCredits();
+      fetchListings();
+    }
+  }, [isLoading, session]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      fetchCredits();
+      fetchListings();
     };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   }, []);
 
-  const badgeText = useMemo(() => {
-    if (!profile) return '—';
-    if (profile.plan === 'premium') return 'Unlimited';
-    const c = profile.credits ?? 0;
-    return profile.plan === 'starter' ? `${c} credits` : `${c} credits (Free)`;
-  }, [profile]);
-
-  async function openBillingPortal() {
-    try {
-      setPortalLoading(true);
-      const res = await fetch('/api/billing/portal', { method: 'POST' });
-      const data = await res.json();
-      if (data?.url) window.location.href = data.url;
-      else alert(data?.error || 'Could not open billing portal');
-    } finally {
-      setPortalLoading(false);
-    }
+  if (isLoading) {
+    return (
+      <main className="mx-auto max-w-6xl px-4 py-8">
+        <div className="animate-pulse text-sm text-gray-600">Loading…</div>
+      </main>
+    );
   }
+  if (!session) return null;
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-10">
-      {/* Top header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <main className="mx-auto max-w-6xl px-4 py-8 space-y-8">
+      <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-          <p className="mt-1 text-zinc-500">Turn property facts into market-ready listings.</p>
+          <h1 className="text-2xl font-semibold">Dashboard</h1>
+          <p className="text-sm text-gray-600">View credits and your recent listings.</p>
         </div>
-        <div className="flex items-center gap-3">
-          <span
-            className={`text-sm px-3 py-1 rounded-full border ${
-              profile?.plan === 'premium'
-                ? 'border-indigo-500 text-indigo-600'
-                : 'border-zinc-300 text-zinc-700'
-            }`}
-          >
-            {loading ? '—' : badgeText}
-          </span>
-          <a
+        <div className="flex items-center gap-2">
+          <div className="rounded-xl border px-3 py-2 text-sm bg-white shadow-sm">
+            Credits:{' '}
+            {loadingCredits ? (
+              <span className="text-gray-500">…</span>
+            ) : credits === null ? (
+              <span className="text-red-600">unavailable</span>
+            ) : (
+              <span className="font-semibold">{credits}</span>
+            )}
+          </div>
+          {/* Use Link for bulletproof client navigation */}
+          <Link
             href="/generate"
-            className="rounded-xl bg-zinc-900 text-white px-4 py-2 hover:bg-zinc-800"
+            className="rounded-lg border px-3 py-2 text-sm bg-white shadow-sm hover:bg-gray-50"
           >
-            New Listing
-          </a>
-          <button
-            onClick={openBillingPortal}
-            disabled={portalLoading}
-            className="rounded-xl border px-4 py-2 hover:bg-zinc-50 disabled:opacity-60"
+            + Generate
+          </Link>
+          <Link
+            href="/pricing"
+            className="rounded-lg border px-3 py-2 text-sm bg-white shadow-sm hover:bg-gray-50"
           >
-            {portalLoading ? 'Opening…' : 'Manage Billing'}
-          </button>
+            Pricing
+          </Link>
         </div>
-      </div>
+      </header>
 
-      {/* Upgrade banner (only for non-premium) */}
-      {profile && profile.plan !== 'premium' && (
-        <div className="mt-6 rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm text-indigo-900">
-              <strong>Unlock Premium:</strong> Unlimited generates, Pro templates (Luxury), full history, and priority support.
-            </div>
-            <a
-              href="/pricing"
-              className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
-            >
-              Upgrade for Unlimited
-            </a>
+      <section className="rounded-2xl border bg-white shadow-sm">
+        <div className="border-b px-4 py-3 font-medium">Your Saved Listings</div>
+        {loadingListings ? (
+          <div className="p-4 text-sm text-gray-600">Loading…</div>
+        ) : listings.length === 0 ? (
+          <div className="p-4 text-sm text-gray-600">
+            No listings yet. Click <span className="font-medium">+ Generate</span> to create your first one.
           </div>
-        </div>
-      )}
-
-      {/* Stats row */}
-      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <Stat
-          label="Plan"
-          value={
-            loading ? '—' : profile?.plan === 'premium'
-              ? 'Premium'
-              : profile?.plan === 'starter'
-              ? 'Starter'
-              : 'Free'
-          }
-        />
-        <Stat label="Credits" value={loading ? '—' : badgeText} />
-        <Stat label="Recent listings" value={loading ? '—' : String(recent.length)} />
-      </div>
-
-      {/* Recent listings */}
-      <section className="mt-10">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xl font-semibold">Recent listings</h2>
-          <a href="/listings" className="text-sm text-indigo-600 hover:underline">
-            View all
-          </a>
-        </div>
-
-        {/* Loading skeletons */}
-        {loading && (
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <SkeletonCard />
-            <SkeletonCard />
-          </div>
-        )}
-
-        {/* Error */}
-        {!loading && err && (
-          <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-            {err}
-          </div>
-        )}
-
-        {/* Empty state */}
-        {!loading && !err && recent.length === 0 && (
-          <div className="mt-6 rounded-2xl border border-dashed p-8 text-center">
-            <div className="text-lg font-medium">No listings yet</div>
-            <p className="mt-1 text-sm text-zinc-500">
-              Create your first listing in under a minute.
-            </p>
-            <a
-              href="/generate"
-              className="mt-4 inline-flex rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800"
-            >
-              Create a Listing
-            </a>
-          </div>
-        )}
-
-        {/* Cards */}
-        {!loading && !err && recent.length > 0 && (
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            {recent.map((item) => (
-              <ListingCard key={item.id} item={item} />
+        ) : (
+          <div className="divide-y">
+            {listings.map((item) => (
+              <div key={item.id} className="flex items-start justify-between gap-4 px-4 py-3">
+                <div>
+                  <div className="font-medium text-blue-600">{item.title}</div>
+                  <div className="mt-1 line-clamp-2 text-sm text-gray-700">
+                    {item.description || 'No description'}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <button
+                    className="text-sm text-blue-600 hover:underline"
+                    onClick={() => {
+                      navigator.clipboard.writeText(item.description || '');
+                      alert('Copied to clipboard');
+                    }}
+                  >
+                    Copy
+                  </button>
+                  <button
+                    className="text-sm text-red-600 hover:underline"
+                    onClick={async () => {
+                      const { error } = await clientSupabase.from('listings').delete().eq('id', item.id);
+                      if (!error) setListings((prev) => prev.filter((x) => x.id !== item.id));
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
             ))}
           </div>
         )}
       </section>
-    </div>
-  );
-}
-
-/* ---------------- components ---------------- */
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border p-4">
-      <div className="text-xs uppercase tracking-wide text-zinc-500">{label}</div>
-      <div className="mt-1 text-xl font-semibold">{value}</div>
-    </div>
-  );
-}
-
-function SkeletonCard() {
-  return (
-    <div className="rounded-2xl border p-5">
-      <div className="flex items-center justify-between">
-        <div className="h-4 w-40 animate-pulse rounded bg-zinc-200" />
-        <div className="h-3 w-28 animate-pulse rounded bg-zinc-200" />
-      </div>
-      <div className="mt-2 h-3 w-24 animate-pulse rounded bg-zinc-200" />
-      <div className="mt-3 space-y-2">
-        <div className="h-3 w-full animate-pulse rounded bg-zinc-200" />
-        <div className="h-3 w-4/5 animate-pulse rounded bg-zinc-200" />
-        <div className="h-3 w-2/3 animate-pulse rounded bg-zinc-200" />
-      </div>
-      <div className="mt-4 flex gap-3">
-        <div className="h-8 w-16 animate-pulse rounded bg-zinc-200" />
-        <div className="h-8 w-24 animate-pulse rounded bg-zinc-200" />
-      </div>
-    </div>
-  );
-}
-
-function ListingCard({ item }: { item: Listing }) {
-  const text = (item.description ?? item.output ?? '').toString();
-
-  const onCopy = async () => {
-    if (!text) return;
-    await navigator.clipboard.writeText(text);
-  };
-
-  const onDownload = () => {
-    if (!text) return;
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${item.title || 'listing'}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
-
-  return (
-    <div className="flex h-full flex-col gap-3 rounded-2xl border p-5">
-      <div className="flex items-center justify-between">
-        <div className="font-medium">{item.title || 'Untitled listing'}</div>
-        <span className="text-xs text-zinc-500">
-          {new Date(item.created_at).toLocaleString()}
-        </span>
-      </div>
-      
-      <div className="line-clamp-4 text-sm text-zinc-700 whitespace-pre-wrap">{text}</div>
-
-      <div className="mt-auto flex flex-wrap gap-3 pt-2">
-        <button
-          onClick={onCopy}
-          className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm text-white hover:bg-zinc-800"
-        >
-          Copy
-        </button>
-        <button
-          onClick={onDownload}
-          className="rounded-lg border px-3 py-1.5 text-sm hover:bg-zinc-50"
-        >
-          Download
-        </button>
-        <a
-          href={`/generate?regenerate=${item.id}`}
-          className="rounded-lg border px-3 py-1.5 text-sm hover:bg-zinc-50"
-        >
-          Re-generate
-        </a>
-      </div>
-    </div>
+    </main>
   );
 }
