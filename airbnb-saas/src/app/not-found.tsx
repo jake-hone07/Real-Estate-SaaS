@@ -9,7 +9,7 @@ export default function NotFound() {
         The page you’re looking for doesn’t exist.
       </p>
 
-      {/* Optional: Show extra context if query params exist */}
+      {/* Only needed if you truly want to read query params on 404 */}
       <Suspense fallback={null}>
         <NotFoundClient />
       </Suspense>
