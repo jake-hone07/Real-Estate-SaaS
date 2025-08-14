@@ -10,8 +10,7 @@ export const metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>
-        {/* Any client component using next/navigation hooks must be inside Suspense */}
+      <body className="bg-bg text-text antialiased">
         <Suspense fallback={null}>
           <AppHeader />
         </Suspense>

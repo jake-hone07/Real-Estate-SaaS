@@ -1,103 +1,151 @@
-// /app/api/generate/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { createClient } from '@supabase/supabase-js';
+import { NextResponse } from "next/server";
 
-type GenerateBody = { title?: string; prompt?: string; [k: string]: any };
+export const runtime = "edge";
 
-export async function POST(req: NextRequest) {
-  const userClient = createRouteHandlerClient({ cookies });
+type Options = {
+  tone: string;
+  audience: string;
+  wordBudget: number;
+  language: string;
+  platform: "Airbnb" | "VRBO" | "Booking";
+  season?: "Default" | "Spring" | "Summer" | "Fall" | "Winter";
+  unit: "imperial" | "metric";
+  includeTitle: boolean;
+  includeHighlights: boolean;
+  includeCaption: boolean;
+  includeSEO: boolean;
+  includeSections: boolean;
+};
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  if (!url || !serviceKey) {
-    return NextResponse.json({ error: 'Missing Supabase env' }, { status: 500 });
-  }
-  const admin = createClient(url, serviceKey);
+function system() {
+  return [{
+    role: "system",
+    content:
+      "You are an expert short-term rental copywriter. Write clear, sensory, specific copy that drives bookings. Avoid clichés, exaggeration, emoji, and protected-class mentions. American English by default unless another language is requested. Prefer active voice and concrete details."
+  }];
+}
 
-  // Auth
-  const { data: auth } = await userClient.auth.getUser();
-  const user = auth?.user;
-  if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+function buildUserPrompt(facts: string, options: Options, parts?: string[], tweak?: string) {
+  const wants = parts && parts.length ? parts : ["description", "titles", "highlights", "sections", "social", "seo"];
+  const titleLimit = options.platform === "Airbnb" ? 32 : options.platform === "VRBO" ? 60 : 70;
 
-  // Inputs
-  const body: GenerateBody = await req.json().catch(() => ({}));
-  const title = body?.title?.trim() || 'Untitled Listing';
-  const prompt = (body?.prompt ?? '').toString().trim();
+  return [{
+    role: "user",
+    content:
+      `FACTS (verbatim):\n${facts}\n\n` +
+      `AUDIENCE: ${options.audience}\n` +
+      `TONE: ${options.tone}\n` +
+      `LANGUAGE: ${options.language}\n` +
+      `PLATFORM: ${options.platform} (title limit ≈ ${titleLimit} chars)\n` +
+      `SEASON: ${options.season || "Default"}\n` +
+      `UNITS: ${options.unit}\n` +
+      (tweak ? `REFINEMENT REQUEST: ${tweak}\n` : "") +
+      `DESCRIPTION WORD BUDGET: ~${options.wordBudget}\n\n` +
+      `OUTPUT: Valid JSON with these keys (omit any not requested or excluded by include* flags):\n` +
+      `{\n` +
+      `  "description": "<2–4 short paragraphs, ${options.wordBudget} words, first sentence = concrete benefit>",\n` +
+      `  "titles": ["Title A","Title B","Title C"],\n` +
+      `  "highlights": ["bullet 1", "bullet 2", "..."],\n` +
+      `  "sections": { "space": "<the space>", "access": "<guest access>", "notes": "<other things to note>"},\n` +
+      `  "social": { "x": "<≤180 chars>", "instagram": "<concise caption>" },\n` +
+      `  "seo": ["neighborhood","amenity","nearby attraction"],\n` +
+      `  "meta": { "word_count": <int>, "reading_time_sec": <int> }\n` +
+      `}\n\n` +
+      `INSTRUCTIONS:\n` +
+      `- Use only details present or clearly implied by FACTS; do not invent safe/unsafe claims.\n` +
+      `- Avoid clichés (e.g., "nestled", "oasis") and protected-class language.\n` +
+      `- Titles must be concrete and within ${titleLimit} chars where possible.\n` +
+      `- Language must be ${options.language}.\n` +
+      `- Return VALID JSON only. No code fences or commentary.\n` +
+      `- Requested sections: ${wants.join(", ")}.\n` +
+      (options.includeTitle ? "" : "- Omit 'titles'.\n") +
+      (options.includeHighlights ? "" : "- Omit 'highlights'.\n") +
+      (options.includeCaption ? "" : "- Omit 'social'.\n") +
+      (options.includeSEO ? "" : "- Omit 'seo'.\n") +
+      (options.includeSections ? "" : "- Omit 'sections'.\n")
+  }];
+}
 
-  // Ledger balance (admin bypasses RLS)
-  const { data: rows, error: sumErr } = await admin
-    .from('credit_ledger')
-    .select('delta')
-    .eq('user_id', user.id);
-  if (sumErr) return NextResponse.json({ error: sumErr.message }, { status: 500 });
-
-  const balance = (rows || []).reduce((n, r: any) => n + Number(r?.delta ?? 0), 0);
-  if (balance < 1) return NextResponse.json({ error: 'Not enough credits' }, { status: 402 });
-
-  // Debit first (idempotent by external_id)
-  const requestId = crypto.randomUUID();
-  const { data: existing, error: existErr } = await admin
-    .from('credit_ledger')
-    .select('id')
-    .eq('user_id', user.id)
-    .eq('external_id', requestId)
-    .maybeSingle();
-  if (existErr) return NextResponse.json({ error: existErr.message }, { status: 500 });
-
-  if (!existing) {
-    const { error: debitErr } = await admin.from('credit_ledger').insert({
-      user_id: user.id,
-      delta: -1,
-      reason: 'generation',
-      external_id: requestId,
-      metadata: { route: '/api/generate', title }
-    });
-    if (debitErr) return NextResponse.json({ error: `Could not debit: ${debitErr.message}` }, { status: 500 });
-  }
-
-  // Do the generation (stub — replace with your model)
-  let generatedText: string | null = null;
+export async function POST(req: Request) {
   try {
-    generatedText = prompt
-      ? `Generated listing based on your input:\n\n${prompt}\n\n— ListingForge`
-      : `Generated listing placeholder. (Add your model call here.)\n\n— ListingForge`;
+    const body = await req.json() as {
+      facts?: string;
+      options?: Options;
+      requestParts?: string[];
+      tweak?: string;
+    };
+
+    const facts = (body.facts || "").trim();
+    if (facts.length < 100) {
+      return NextResponse.json({ error: "Please provide more property detail (≥ 100 chars)." }, { status: 400 });
+    }
+
+    const options: Options = Object.assign({
+      tone: "Warm & professional",
+      audience: "Families & small groups",
+      wordBudget: 180,
+      language: "English",
+      platform: "Airbnb",
+      season: "Default",
+      unit: "imperial",
+      includeTitle: true,
+      includeHighlights: true,
+      includeCaption: true,
+      includeSEO: true,
+      includeSections: true,
+    }, body.options || {});
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return NextResponse.json({ error: "Missing OPENAI_API_KEY" }, { status: 500 });
+
+    const messages = [...system(), ...buildUserPrompt(facts, options, body.requestParts, body.tweak)];
+
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages,
+        temperature: 0.7,
+        max_tokens: 900,
+        response_format: { type: "json_object" },
+      })
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return NextResponse.json({ error: `Provider error: ${resp.status} ${text}` }, { status: 502 });
+    }
+
+    const data = await resp.json();
+    const raw = data?.choices?.[0]?.message?.content || "{}";
+
+    let parsed: any;
+    try { parsed = JSON.parse(raw); }
+    catch { return NextResponse.json({ error: "Model returned invalid JSON" }, { status: 502 }); }
+
+    // Normalize output
+    const result = {
+      description: typeof parsed.description === "string" ? parsed.description.trim() : undefined,
+      titles: Array.isArray(parsed.titles) ? parsed.titles.map(String).filter(Boolean).slice(0, 5) : undefined,
+      highlights: Array.isArray(parsed.highlights) ? parsed.highlights.map(String).filter(Boolean).slice(0, 12) : undefined,
+      sections: parsed.sections && typeof parsed.sections === "object"
+        ? {
+            space: parsed.sections.space ? String(parsed.sections.space) : undefined,
+            access: parsed.sections.access ? String(parsed.sections.access) : undefined,
+            notes: parsed.sections.notes ? String(parsed.sections.notes) : undefined,
+          } : undefined,
+      social: parsed.social && typeof parsed.social === "object"
+        ? {
+            x: parsed.social.x ? String(parsed.social.x) : undefined,
+            instagram: parsed.social.instagram ? String(parsed.social.instagram) : undefined,
+          } : undefined,
+      seo: Array.isArray(parsed.seo) ? parsed.seo.map(String).filter(Boolean).slice(0, 15) : undefined,
+      meta: parsed.meta && typeof parsed.meta === "object" ? parsed.meta : undefined,
+    };
+
+    return NextResponse.json({ result });
   } catch (e: any) {
-    await admin.from('credit_ledger').insert({
-      user_id: user.id,
-      delta: +1,
-      reason: 'refund_generation_failed',
-      external_id: `${requestId}-refund`,
-      metadata: { route: '/api/generate' }
-    });
-    return NextResponse.json({ error: 'Generation failed' }, { status: 500 });
+    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
   }
-
-  if (!generatedText) {
-    await admin.from('credit_ledger').insert({
-      user_id: user.id,
-      delta: +1,
-      reason: 'refund_generation_failed',
-      external_id: `${requestId}-refund`,
-      metadata: { route: '/api/generate' }
-    });
-    return NextResponse.json({ error: 'No content generated' }, { status: 500 });
-  }
-
-  // Save as the user (RLS-respecting)
-  const { data: inserted, error: insErr } = await userClient
-    .from('listings')
-    .insert({ user_id: user.id, title, description: generatedText })
-    .select('*')
-    .single();
-
-  // return text even if save fails (don’t burn user’s result)
-  return NextResponse.json({
-    ok: true,
-    listing: generatedText,
-    saved: inserted ?? null,
-    debited: 1,
-    requestId
-  });
 }
