@@ -8,16 +8,10 @@ export default function NotFound() {
       <p className="mt-2 text-gray-600">
         The page you’re looking for doesn’t exist.
       </p>
-
-      {/* Only needed if you truly want to read query params on 404 */}
       <Suspense fallback={null}>
         <NotFoundClient />
       </Suspense>
-
-      <a
-        href="/"
-        className="mt-6 inline-block rounded-md border px-4 py-2 hover:bg-gray-100"
-      >
+      <a href="/" className="mt-6 inline-block rounded-md border px-4 py-2 hover:bg-gray-100">
         Go home
       </a>
     </main>
