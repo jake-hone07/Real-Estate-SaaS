@@ -1,29 +1,16 @@
-"use client";
+'use client';
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import AccountStatus from './AccountStatus';
 
 export default function AppHeader() {
-  const pathname = usePathname();
-
-  const NavLink = ({ href, label }: { href: string; label: string }) => (
-    <Link
-      href={href}
-      className={`px-2 py-1.5 text-sm rounded-md hover:bg-white/5 ${
-        pathname === href ? "font-semibold" : "text-zinc-300"
-      }`}
-    >
-      {label}
-    </Link>
-  );
-
   return (
-    <header className="h-16 flex items-center justify-between px-4 border-b border-border">
-      <Link href="/" className="font-semibold">ListingForge</Link>
-      <nav className="flex gap-2">
-        <NavLink href="/generate" label="Generate" />
-        <NavLink href="/billing" label="Billing" />
-        <NavLink href="/login" label="Login" />
+    <header className="h-16 px-4 flex items-center justify-between border-b border-neutral-800">
+      <a href="/" className="font-semibold">ListingForge</a>
+      <nav className="flex items-center gap-4">
+        <a href="/generate">Generate</a>
+        <a href="/billing">Billing</a>
+        <a href="/login">Login</a>
+        <AccountStatus />
       </nav>
     </header>
   );

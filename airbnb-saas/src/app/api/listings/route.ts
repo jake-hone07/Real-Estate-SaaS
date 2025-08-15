@@ -1,35 +1,32 @@
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
+import { createSupabaseServerClient } from '@/lib/supabase-server';
 
-export async function GET(request: Request) {
-  const supabase = createRouteHandlerClient({ cookies });
+export async function POST(req: Request) {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
-  // Get current user
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
+    // Support both form posts and JSON
+    const contentType = req.headers.get('content-type') || '';
+    const body = contentType.includes('application/json')
+      ? await req.json()
+      : Object.fromEntries(await (req as any).formData?.() ?? (await req.formData()));
 
-  if (authError || !user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const payload = {
+      user_id: user.id,
+      title: body.title as string,
+      summary: body.summary as string,
+      amenities: body.amenities ? JSON.parse(typeof body.amenities === 'string' ? body.amenities : '[]') : [],
+      city: (body.city || null) as string | null,
+      state: (body.state || null) as string | null,
+      country: (body.country || null) as string | null,
+    };
+
+    const { data, error } = await supabase.from('listings').insert(payload).select().single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json({ data });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message ?? 'Unknown error' }, { status: 500 });
   }
-
-  // Parse limit from URL (default 5)
-  const { searchParams } = new URL(request.url);
-  const limit = parseInt(searchParams.get('limit') || '5', 10);
-
-  // Fetch recent listings
-  const { data, error } = await supabase
-    .from('listings')
-    .select('id, title, description, created_at') // no template
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  return NextResponse.json({ data });
 }

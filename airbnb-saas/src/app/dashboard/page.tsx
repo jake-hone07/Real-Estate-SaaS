@@ -26,7 +26,7 @@ export default function DashboardPage() {
   const fetchCredits = async () => {
     setLoadingCredits(true);
     try {
-      const res = await fetch('/api/credits', { cache: 'no-store' });
+      const res = await fetch('/api/me', { cache: 'no-store' });
       const json = (await res.json()) as CreditResp;
       if (!res.ok || 'error' in json) throw new Error((json as any)?.error || `HTTP ${res.status}`);
       setCredits((json as any).balance ?? 0);
