@@ -1,45 +1,32 @@
 // src/app/api/listings/route.ts
 import { NextResponse } from 'next/server';
-import { requireSession } from '@/lib/require-session';
+import { createServer } from '@/lib/supabase/server';
+
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
-  try {
-    const { supabase, user } = await requireSession();
-    const body = await req.json();
+  const supabase = await createServer();
 
-    // Expected payload from the generator
-    const {
-      title,
-      description,
-      address,
-      price,
-      bedrooms,
-      bathrooms,
-      squareFeet,
-      tone,
-      content_json,   // <- full structured result
-    } = body ?? {};
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { data, error } = await supabase
-      .from('listings')
-      .insert([{
-        user_id: user.id,
-        title: title ?? null,
-        description: description ?? null,
-        address: address ?? null,
-        price: typeof price === 'number' ? price : null,
-        bedrooms: typeof bedrooms === 'number' ? bedrooms : null,
-        bathrooms: typeof bathrooms === 'number' ? bathrooms : null,
-        squareFeet: typeof squareFeet === 'number' ? squareFeet : null,
-        tone: tone ?? null,
-        content_json: content_json ?? null,
-      }])
-      .select('id')
-      .single();
+  const payload = await req.json();
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-    return NextResponse.json({ id: data?.id });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message || 'Create failed' }, { status: 500 });
+  // attach owner + server-side timestamp
+  const row = {
+    ...payload,
+    user_id: user.id,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supabase.from('listings')
+    .insert([row])
+    .select('*')
+    .single();
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
   }
+
+  return NextResponse.json({ ok: true, listing: data });
 }
