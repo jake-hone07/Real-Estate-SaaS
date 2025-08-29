@@ -1,10 +1,16 @@
-// /lib/require-session.ts
+// src/lib/require-session.ts
 import { redirect } from 'next/navigation';
-import { createSupabaseServerClient } from './supabase-server';
+import { createClientServer } from '@/lib/supabase';
+import type { User } from '@supabase/supabase-js';
 
-export async function requireSession() {
-  const supabase = createSupabaseServerClient();
-  const { data: { user } } = await (await supabase).auth.getUser();
+type RequireSessionResult = {
+  user: User;
+  supabase: Awaited<ReturnType<typeof createClientServer>>;
+};
+
+export async function requireSession(): Promise<RequireSessionResult> {
+  const supabase = await createClientServer();
+  const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
   return { user, supabase };
 }

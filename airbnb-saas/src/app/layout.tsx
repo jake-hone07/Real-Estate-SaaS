@@ -3,15 +3,16 @@ import './globals.css';
 import { Suspense } from 'react';
 import AppHeader from '@/components/AppHeader';
 import Providers from './providers';
+import type { Metadata } from 'next';
 
-export const metadata = {
+export const metadata: Metadata = {
   title: 'ListingForge',
   description: 'Turn property facts into market-ready listings.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className="bg-bg text-text antialiased">
         <Providers>
           <Suspense fallback={null}>
@@ -23,4 +24,3 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
-

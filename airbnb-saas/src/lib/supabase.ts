@@ -1,9 +1,41 @@
-'use client';
+import { cookies } from 'next/headers';
+import {
+  createBrowserClient,
+  createServerClient,
+  type CookieOptions,
+} from '@supabase/ssr';
+import type { PostgrestError } from '@supabase/supabase-js';
 
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
+export const createClientBrowser = () =>
+  createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
 
-export const supabase = createClientComponentClient();
+// ⬇️ NOW ASYNC
+export const createClientServer = async () => {
+  const cookieStore = await cookies(); // Next 15: async cookies()
 
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        set(name: string, value: string, options: CookieOptions) {
+          cookieStore.set({ name, value, ...options }); // object form
+        },
+        remove(name: string, options: CookieOptions) {
+          cookieStore.set({ name, value: '', ...options });
+        },
+      },
+    }
+  );
+};
+
+// ---- helpers
 export type NewListing = {
   title: string;
   description: string;
@@ -23,26 +55,24 @@ export type NewListing = {
   hoaInfo?: string;
 };
 
+export async function getUserServer() {
+  const supabase = await createClientServer(); // ⬅️ await
+  const { data, error } = await supabase.auth.getUser();
+  return { user: data?.user ?? null, error };
+}
+
 export async function addListing(listing: NewListing) {
+  const supabase = createClientBrowser();
   const {
     data: { user },
     error: userError,
   } = await supabase.auth.getUser();
 
-  if (userError || !user) {
-    console.error('❌ Failed to get user:', userError?.message);
-    throw new Error('User not authenticated.');
-  }
+  if (userError || !user) throw new Error('User not authenticated.');
 
-  const { error } = await supabase.from('listings').insert([
-    {
-      ...listing,
-      user_id: user.id,
-    },
-  ]);
+  const { error }: { error: PostgrestError | null } = await supabase
+    .from('listings')
+    .insert([{ ...listing, user_id: user.id }]);
 
-  if (error) {
-    console.error('❌ Failed to add listing:', error.message);
-    throw new Error(error.message);
-  }
+  if (error) throw new Error(error.message);
 }

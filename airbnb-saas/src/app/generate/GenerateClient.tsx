@@ -5,32 +5,19 @@ import { qualityReport } from "@/lib/lint";
 
 /** ---------- Types ---------- */
 type TabKey =
-  | "preview"
-  | "title"
-  | "summary"
-  | "description"
-  | "highlights"
-  | "sections"
-  | "amenities"
-  | "neighborhood"
-  | "rules"
-  | "photos"
-  | "social"
-  | "seo";
+  | "preview" | "title" | "summary" | "description" | "highlights" | "sections"
+  | "amenities" | "neighborhood" | "rules" | "photos" | "social" | "seo";
 
 type GenState = "idle" | "loading" | "done" | "error";
-
 type Sections = { space?: string; access?: string; notes?: string };
 
 type ResultPayload = {
-  // core
   titlePrimary?: string;
   titles?: string[];
   summary?: string;
   description?: string;
   highlights?: string[];
   sections?: Sections;
-  // extended
   amenities?: string[];
   neighborhood?: string;
   rules?: string;
@@ -98,6 +85,7 @@ export default function GenerateClient() {
   const [active, setActive] = useState<TabKey>("preview");
   const [copied, setCopied] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("Untitled listing");
+  const [lastSavedId, setLastSavedId] = useState<number | null>(null);
   const rightRef = useRef<HTMLDivElement>(null);
 
   /** Derived */
@@ -115,7 +103,7 @@ export default function GenerateClient() {
   const quality = useMemo(() => qualityReport(fullFacts), [fullFacts]);
   const disableGenerate = state === "loading" || chars < MIN_CHARS;
 
-  /** Autosave */
+  /** Autosave to localStorage */
   useEffect(() => {
     const raw = localStorage.getItem("lg_project_v2");
     if (raw) {
@@ -208,6 +196,36 @@ export default function GenerateClient() {
     return json as { result: ResultPayload };
   }
 
+  async function createListingAuto(result: ResultPayload) {
+    // map a few columns; keep numbers as null (avoid “0” defaults)
+    const payload = {
+      title: result.titlePrimary || result.titles?.[0] || projectName || null,
+      description: result.description || null,
+      address: null,
+      price: null,
+      bedrooms: null,
+      bathrooms: null,
+      squareFeet: null,
+      tone: opt.tone ?? null,
+      content_json: result, // full structured payload
+    };
+
+    const rsp = await fetch("/api/listings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!rsp.ok) {
+      // don’t hard-fail the UX; just surface a toast/alert
+      const b = await rsp.json().catch(() => ({}));
+      console.error("Create failed:", b?.error || rsp.statusText);
+      return null;
+    }
+    const { id } = (await rsp.json()) as { id: number };
+    setLastSavedId(id || null);
+    return id ?? null;
+  }
+
   async function onGenerate() {
     if (chars < MIN_CHARS) {
       setErr(`Add a bit more detail first (≥ ${MIN_CHARS} characters).`);
@@ -220,6 +238,9 @@ export default function GenerateClient() {
       setRes(result || {});
       setState("done");
       setActive("preview");
+      // ---- auto-save to DB ----
+      void createListingAuto(result);
+      // scroll to preview
       requestAnimationFrame(() => rightRef.current?.scrollIntoView({ behavior: "smooth" }));
     } catch (e: any) {
       setErr(e?.message || "Something went wrong");
@@ -260,9 +281,7 @@ export default function GenerateClient() {
       s.space ? `THE SPACE:\n${s.space}` : "",
       s.access ? `GUEST ACCESS:\n${s.access}` : "",
       s.notes ? `OTHER THINGS TO NOTE:\n${s.notes}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    ].filter(Boolean).join("\n\n");
     copyText(t);
   }
   function copyAllForAirbnb() {
@@ -277,9 +296,7 @@ export default function GenerateClient() {
       res.amenities?.length ? `AMENITIES:\n${res.amenities.map((b) => `• ${b}`).join("\n")}` : "",
       res.neighborhood ? `NEIGHBORHOOD:\n${res.neighborhood}` : "",
       res.rules ? `HOUSE RULES:\n${res.rules}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    ].filter(Boolean).join("\n\n");
     if (!chunks) return;
     copyText(chunks);
     flash("all");
@@ -297,6 +314,11 @@ export default function GenerateClient() {
             className="rounded-md border border-gray-700 bg-transparent px-2 py-1 text-sm"
             placeholder="Project name"
           />
+          {lastSavedId && (
+            <a className="text-xs underline opacity-80" href={`/listing/${lastSavedId}`}>
+              View saved →
+            </a>
+          )}
         </div>
 
         {/* Quality */}
@@ -304,12 +326,7 @@ export default function GenerateClient() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               {pill("Insert sample", insertSample)}
-              {pill("Clear", () => {
-                setBasics("");
-                setHighlightsIn("");
-                setLocationIn("");
-                setRulesIn("");
-              })}
+              {pill("Clear", () => { setBasics(""); setHighlightsIn(""); setLocationIn(""); setRulesIn(""); })}
             </div>
             <span className="text-xs text-gray-400">
               {chars}/{MIN_CHARS}+ chars
@@ -323,26 +340,14 @@ export default function GenerateClient() {
           </div>
           {!!quality.reasons.length && (
             <ul className="mt-2 list-disc pl-5 text-xs text-gray-400">
-              {quality.reasons.map((r, i) => (
-                <li key={i}>{r}</li>
-              ))}
+              {quality.reasons.map((r, i) => <li key={i}>{r}</li>)}
             </ul>
           )}
         </div>
 
         {field("Basics", basics, setBasics, "Beds/baths, sleeps, property type, standout amenities, parking, Wi-Fi…")}
-        {field(
-          "Highlights",
-          highlightsIn,
-          setHighlightsIn,
-          "Unique touches: view, hot tub, fire pit, chef’s kitchen, espresso machine, blackout curtains…"
-        )}
-        {field(
-          "Location",
-          locationIn,
-          setLocationIn,
-          "Walking times (cafés, groceries, transit), nearby attractions, neighborhood vibe…"
-        )}
+        {field("Highlights", highlightsIn, setHighlightsIn, "Unique touches: view, hot tub, fire pit, chef’s kitchen, espresso machine, blackout curtains…")}
+        {field("Location", locationIn, setLocationIn, "Walking times (cafés, groceries, transit), nearby attractions, neighborhood vibe…")}
         {field("House rules", rulesIn, setRulesIn, "Quiet hours, parties, pets, smoking…")}
 
         {/* Options */}
@@ -350,45 +355,24 @@ export default function GenerateClient() {
           <h3 className="font-medium">Options</h3>
           <div className="grid gap-4 md:grid-cols-2">
             <Select label="Tone" value={opt.tone} onChange={(v) => setOptField("tone", v)} items={[
-              "Warm & professional",
-              "Friendly & upbeat",
-              "Calm & minimalist",
-              "Luxury, refined",
-              "Family-friendly",
+              "Warm & professional","Friendly & upbeat","Calm & minimalist","Luxury, refined","Family-friendly",
             ]}/>
             <Select label="Audience" value={opt.audience} onChange={(v) => setOptField("audience", v)} items={[
-              "Families & small groups",
-              "Couples & business travelers",
-              "Remote workers",
-              "Adventure travelers",
-              "Long-term stays",
+              "Families & small groups","Couples & business travelers","Remote workers","Adventure travelers","Long-term stays",
             ]}/>
             <div>
               <label className="mb-1 block text-sm text-gray-300">
                 Word budget: <span className="text-gray-400">{opt.wordBudget} words</span>
               </label>
-              <input
-                type="range"
-                min={120}
-                max={260}
-                step={10}
-                value={opt.wordBudget}
-                onChange={(e) => setOptField("wordBudget", parseInt(e.target.value))}
-                className="w-full"
-              />
+              <input type="range" min={120} max={260} step={10} value={opt.wordBudget}
+                     onChange={(e) => setOptField("wordBudget", parseInt(e.target.value))} className="w-full" />
             </div>
             <Select label="Language" value={opt.language} onChange={(v)=>setOptField("language", v)} items={[
               "English","Spanish","French","German","Portuguese","Italian","Japanese","Chinese"
             ]}/>
-            <Select label="Platform style" value={opt.platform} onChange={(v)=>setOptField("platform", v as any)} items={[
-              "Airbnb","VRBO","Booking"
-            ]}/>
-            <Select label="Season" value={opt.season || "Default"} onChange={(v)=>setOptField("season", v as any)} items={[
-              "Default","Spring","Summer","Fall","Winter"
-            ]}/>
-            <Select label="Units" value={opt.unit} onChange={(v)=>setOptField("unit", v as any)} items={[
-              "imperial","metric"
-            ]}/>
+            <Select label="Platform style" value={opt.platform} onChange={(v)=>setOptField("platform", v as any)} items={["Airbnb","VRBO","Booking"]}/>
+            <Select label="Season" value={opt.season || "Default"} onChange={(v)=>setOptField("season", v as any)} items={["Default","Spring","Summer","Fall","Winter"]}/>
+            <Select label="Units" value={opt.unit} onChange={(v)=>setOptField("unit", v as any)} items={["imperial","metric"]}/>
           </div>
 
           <div className="flex flex-wrap items-center gap-4 text-sm">
@@ -406,11 +390,8 @@ export default function GenerateClient() {
 
         {/* CTA */}
         <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={onGenerate}
-            disabled={disableGenerate}
-            className="rounded-md border border-gray-600 px-4 py-2 text-sm disabled:opacity-50"
-          >
+          <button onClick={onGenerate} disabled={disableGenerate}
+                  className="rounded-md border border-gray-600 px-4 py-2 text-sm disabled:opacity-50">
             {state === "loading" ? "Generating…" : "Generate"}
           </button>
           {err && <span className="text-sm text-rose-400">{err}</span>}
@@ -421,57 +402,22 @@ export default function GenerateClient() {
       <section ref={rightRef} className="rounded-lg border border-gray-700 p-4 md:sticky md:top-6 h-fit">
         {/* Tabs */}
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          {(
-            [
-              "preview",
-              "title",
-              "summary",
-              "description",
-              "highlights",
-              "sections",
-              "amenities",
-              "neighborhood",
-              "rules",
-              "photos",
-              "social",
-              "seo",
-            ] as TabKey[]
-          ).map((k) => (
-            <button
-              key={k}
-              onClick={() => setActive(k)}
-              className={`rounded-md px-3 py-1.5 text-sm ${
-                active === k ? "border border-gray-500 bg-white/5" : "text-gray-300 hover:bg-white/5"
-              }`}
-            >
+          {(["preview","title","summary","description","highlights","sections","amenities","neighborhood","rules","photos","social","seo"] as TabKey[]).map((k) => (
+            <button key={k} onClick={() => setActive(k)}
+              className={`rounded-md px-3 py-1.5 text-sm ${active === k ? "border border-gray-500 bg-white/5" : "text-gray-300 hover:bg-white/5"}`}>
               {label(k)}
             </button>
           ))}
-
           <div className="ml-auto flex items-center gap-2">
-            <button
-              onClick={copyAllForAirbnb}
-              className="rounded-md border border-gray-600 px-2 py-1 text-xs"
-            >
+            <button onClick={copyAllForAirbnb} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
               {copied === "all" ? "Copied!" : "Copy All for Airbnb"}
             </button>
             <button
               onClick={() => {
-                const payload = {
-                  project: projectName,
-                  options: opt,
-                  facts: fullFacts,
-                  result: res,
-                };
-                const blob = new Blob([JSON.stringify(payload, null, 2)], {
-                  type: "application/json",
-                });
+                const payload = { project: projectName, options: opt, facts: fullFacts, result: res };
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
                 const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = "listing.json";
-                a.click();
-                URL.revokeObjectURL(url);
+                const a = document.createElement("a"); a.href = url; a.download = "listing.json"; a.click(); URL.revokeObjectURL(url);
               }}
               className="rounded-md border border-gray-600 px-2 py-1 text-xs"
             >
@@ -481,9 +427,7 @@ export default function GenerateClient() {
         </div>
 
         {/* States */}
-        {state === "idle" && (
-          <p className="text-sm text-gray-500">Your results will appear here after you generate.</p>
-        )}
+        {state === "idle" && <p className="text-sm text-gray-500">Your results will appear here after you generate.</p>}
         {state === "loading" && (
           <div className="animate-pulse space-y-2">
             <div className="h-4 rounded bg-gray-800/50" />
@@ -492,9 +436,7 @@ export default function GenerateClient() {
             <div className="h-4 w-2/6 rounded bg-gray-800/50" />
           </div>
         )}
-        {state === "error" && (
-          <p className="text-sm text-rose-400">{err || "Something went wrong."}</p>
-        )}
+        {state === "error" && <p className="text-sm text-rose-400">{err || "Something went wrong."}</p>}
 
         {state === "done" && (
           <div className="space-y-4">
@@ -504,25 +446,18 @@ export default function GenerateClient() {
               <TitlesBlock
                 primary={res.titlePrimary || ""}
                 titles={res.titles || []}
-                onCopyPrimary={() => {
-                  copyText(res.titlePrimary || "");
-                  flash("title1");
-                } }
-                onCopyAll={() => {
-                  copyList(res.titles || [], "");
-                  flash("titleall");
-                } }
-                onRegenerate={() => regeneratePart("titles")} platform={"Airbnb"}              />
+                onCopyPrimary={() => { copyText(res.titlePrimary || ""); flash("title1"); }}
+                onCopyAll={() => { copyList(res.titles || [], ""); flash("titleall"); }}
+                onRegenerate={() => regeneratePart("titles")}
+                platform={"Airbnb"}
+              />
             )}
 
             {active === "summary" && (
               <RefinableBlock
                 title="Summary"
                 text={res.summary || ""}
-                onCopy={() => {
-                  copyText(res.summary || "");
-                  flash("summary");
-                }}
+                onCopy={() => { copyText(res.summary || ""); flash("summary"); }}
                 onDownload={() => downloadText(res.summary, "summary.txt")}
                 refine={(t) => regeneratePart("summary", t)}
                 options={["Shorter", "Longer", "More luxury", "More family-friendly", "Tighter"]}
@@ -533,10 +468,7 @@ export default function GenerateClient() {
               <RefinableBlock
                 title="Description"
                 text={res.description || ""}
-                onCopy={() => {
-                  copyText(res.description || "");
-                  flash("desc");
-                }}
+                onCopy={() => { copyText(res.description || ""); flash("desc"); }}
                 onDownload={() => downloadText(res.description, "description.txt")}
                 refine={(t) => regeneratePart("description", t)}
                 options={["Shorter", "Longer", "More sensory", "More minimalist", "Tighter"]}
@@ -547,10 +479,7 @@ export default function GenerateClient() {
               <ListBlock
                 title="Highlights"
                 items={res.highlights || []}
-                onCopy={() => {
-                  copyList(res.highlights);
-                  flash("highlights");
-                }}
+                onCopy={() => { copyList(res.highlights); flash("highlights"); }}
                 onDownload={() => downloadList(res.highlights, "highlights.txt")}
                 onRegenerate={() => regeneratePart("highlights")}
                 tip="Use concrete claims and unique amenities."
@@ -560,19 +489,14 @@ export default function GenerateClient() {
             {active === "sections" && (
               <SectionsBlock
                 sections={res.sections || {}}
-                onCopy={() => {
-                  copySections(res.sections);
-                  flash("sections");
-                }}
+                onCopy={() => { copySections(res.sections); flash("sections"); }}
                 onDownload={() =>
                   downloadText(
                     [
                       res.sections?.space ? `THE SPACE:\n${res.sections.space}` : "",
                       res.sections?.access ? `GUEST ACCESS:\n${res.sections.access}` : "",
                       res.sections?.notes ? `OTHER THINGS TO NOTE:\n${res.sections.notes}` : "",
-                    ]
-                      .filter(Boolean)
-                      .join("\n\n"),
+                    ].filter(Boolean).join("\n\n"),
                     "airbnb-sections.txt"
                   )
                 }
@@ -584,10 +508,7 @@ export default function GenerateClient() {
               <ListBlock
                 title="Amenities"
                 items={res.amenities || []}
-                onCopy={() => {
-                  copyList(res.amenities);
-                  flash("amenities");
-                }}
+                onCopy={() => { copyList(res.amenities); flash("amenities"); }}
                 onDownload={() => downloadList(res.amenities, "amenities.txt")}
                 onRegenerate={() => regeneratePart("amenities")}
                 tip="Group similar items; avoid duplicates."
@@ -598,10 +519,7 @@ export default function GenerateClient() {
               <RefinableBlock
                 title="Neighborhood"
                 text={res.neighborhood || ""}
-                onCopy={() => {
-                  copyText(res.neighborhood || "");
-                  flash("neighborhood");
-                }}
+                onCopy={() => { copyText(res.neighborhood || ""); flash("neighborhood"); }}
                 onDownload={() => downloadText(res.neighborhood, "neighborhood.txt")}
                 refine={(t) => regeneratePart("neighborhood", t)}
                 options={["Shorter", "Longer", "More landmarks", "More walkability"]}
@@ -612,10 +530,7 @@ export default function GenerateClient() {
               <RefinableBlock
                 title="House Rules"
                 text={res.rules || ""}
-                onCopy={() => {
-                  copyText(res.rules || "");
-                  flash("rules");
-                }}
+                onCopy={() => { copyText(res.rules || ""); flash("rules"); }}
                 onDownload={() => downloadText(res.rules, "rules.txt")}
                 refine={(t) => regeneratePart("rules", t)}
                 options={["More concise", "Friendlier tone", "Stricter tone"]}
@@ -626,10 +541,7 @@ export default function GenerateClient() {
               <ListBlock
                 title="Photo captions"
                 items={res.photoCaptions || []}
-                onCopy={() => {
-                  copyList(res.photoCaptions, "");
-                  flash("photos");
-                }}
+                onCopy={() => { copyList(res.photoCaptions, ""); flash("photos"); }}
                 onDownload={() => downloadList(res.photoCaptions, "photo-captions.txt")}
                 onRegenerate={() => regeneratePart("photos")}
                 tip="Pair each caption with the matching image when you upload."
@@ -641,21 +553,10 @@ export default function GenerateClient() {
                 <div className="flex items-center justify-between">
                   <h4 className="font-medium">Social captions</h4>
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => regeneratePart("social")}
-                      className="rounded-md border border-gray-600 px-2 py-1 text-xs"
-                    >
-                      Regenerate
-                    </button>
-                    <button
-                      onClick={() => {
-                        copyText(
-                          [res.social?.x, res.social?.instagram].filter(Boolean).join("\n\n")
-                        );
-                        flash("social");
-                      }}
-                      className="rounded-md border border-gray-600 px-2 py-1 text-xs"
-                    >
+                    <button onClick={() => regeneratePart("social")}
+                            className="rounded-md border border-gray-600 px-2 py-1 text-xs">Regenerate</button>
+                    <button onClick={() => { copyText([res.social?.x, res.social?.instagram].filter(Boolean).join("\n\n")); flash("social"); }}
+                            className="rounded-md border border-gray-600 px-2 py-1 text-xs">
                       {copied === "social" ? "Copied!" : "Copy"}
                     </button>
                   </div>
@@ -669,13 +570,8 @@ export default function GenerateClient() {
               <ListBlock
                 title="SEO keywords"
                 items={res.seo || []}
-                onCopy={() => {
-                  copyText((res.seo || []).join(", "));
-                  flash("seo");
-                }}
-                onDownload={() =>
-                  downloadText((res.seo || []).join(", "), "seo-tags.txt")
-                }
+                onCopy={() => { copyText((res.seo || []).join(", ")); flash("seo"); }}
+                onDownload={() => downloadText((res.seo || []).join(", "), "seo-tags.txt")}
                 onRegenerate={() => regeneratePart("seo")}
                 tip="Mix neighborhood + property-type + standout amenities."
               />
@@ -688,45 +584,27 @@ export default function GenerateClient() {
 }
 
 /** ---------- Small subcomponents ---------- */
-function Select({
-  label,
-  value,
-  onChange,
-  items,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  items: string[];
+function Select({ label, value, onChange, items }:{
+  label: string; value: string; onChange: (v: string) => void; items: string[];
 }) {
   return (
     <div>
       <label className="mb-1 block text-sm text-gray-300">{label}</label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-md border border-gray-700 bg-transparent px-3 py-2 text-sm"
-      >
-        {items.map((t) => (
-          <option key={t} value={t} className="bg-black">
-            {t}
-          </option>
-        ))}
+      <select value={value} onChange={(e)=>onChange(e.target.value)}
+              className="w-full rounded-md border border-gray-700 bg-transparent px-3 py-2 text-sm">
+        {items.map((t) => <option key={t} value={t} className="bg-black">{t}</option>)}
       </select>
     </div>
   );
 }
-
-function Toggle({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ label, value, onChange }:{ label: string; value: boolean; onChange: (v: boolean) => void }) {
   return (
     <label className="flex items-center gap-2">
-      <input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />
-      {label}
+      <input type="checkbox" checked={value} onChange={(e)=>onChange(e.target.checked)} /> {label}
     </label>
   );
 }
-
-function Card({ label, body }: { label: string; body?: string }) {
+function Card({ label, body }:{ label: string; body?: string }) {
   return (
     <div className="rounded-md border border-gray-700 p-2">
       <div className="mb-1 text-xs text-gray-400">{label}</div>
@@ -734,118 +612,57 @@ function Card({ label, body }: { label: string; body?: string }) {
     </div>
   );
 }
-/** Titles block for primary + A/B/C titles */
-function TitlesBlock({
-  primary,
-  titles,
-  onCopyPrimary,
-  onCopyAll,
-  onRegenerate,
-  platform,
-}: {
-  primary: string;
-  titles: string[];
-  onCopyPrimary: () => void;
-  onCopyAll: () => void;
-  onRegenerate: () => void;
-  platform: "Airbnb" | "VRBO" | "Booking";
+function TitlesBlock({ primary, titles, onCopyPrimary, onCopyAll, onRegenerate, platform }:{
+  primary: string; titles: string[]; onCopyPrimary: ()=>void; onCopyAll: ()=>void; onRegenerate: ()=>void; platform: "Airbnb"|"VRBO"|"Booking";
 }) {
   const limit = platform === "Airbnb" ? 32 : platform === "VRBO" ? 60 : 70;
-
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h4 className="font-medium">Title (Primary + A/B/C)</h4>
         <div className="flex items-center gap-2">
-          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            Regenerate
-          </button>
-          <button onClick={onCopyAll} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            Copy All
-          </button>
+          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Regenerate</button>
+          <button onClick={onCopyAll} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Copy All</button>
         </div>
       </div>
-
-      {/* Primary title */}
       <div className="rounded-md border border-gray-700 p-2">
         <div className="mb-1 flex items-center justify-between text-xs text-gray-400">
-          <span>Primary</span>
-          <span>{primary.length}/{limit}</span>
+          <span>Primary</span><span>{primary.length}/{limit}</span>
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className={`font-medium ${primary.length > limit ? "text-amber-400" : ""}`}>
-            {primary || "—"}
-          </span>
-          <button onClick={onCopyPrimary} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            Copy
-          </button>
+          <span className={`font-medium ${primary.length > limit ? "text-amber-400" : ""}`}>{primary || "—"}</span>
+          <button onClick={onCopyPrimary} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Copy</button>
         </div>
       </div>
-
-      {/* Alternates */}
       <div className="space-y-2">
-        {(titles || []).length ? (
-          titles.map((t, i) => (
-            <div key={i} className="rounded-md border border-gray-700 p-2">
-              <div className="mb-1 flex items-center justify-between text-xs text-gray-400">
-                <span>Alt {String.fromCharCode(65 + i)}</span>
-                <span>{t.length}/{limit}</span>
-              </div>
-              <span className={`font-medium ${t.length > limit ? "text-amber-400" : ""}`}>{t}</span>
+        {(titles || []).length ? titles.map((t, i) => (
+          <div key={i} className="rounded-md border border-gray-700 p-2">
+            <div className="mb-1 flex items-center justify-between text-xs text-gray-400">
+              <span>Alt {String.fromCharCode(65 + i)}</span><span>{t.length}/{limit}</span>
             </div>
-          ))
-        ) : (
-          <p className="text-sm text-gray-500">No alternate titles generated.</p>
-        )}
+            <span className={`font-medium ${t.length > limit ? "text-amber-400" : ""}`}>{t}</span>
+          </div>
+        )) : <p className="text-sm text-gray-500">No alternate titles generated.</p>}
       </div>
-
-      <p className="text-xs text-gray-400">
-        Tip: Airbnb truncates around ~32 characters—lead with your strongest concrete hook.
-      </p>
+      <p className="text-xs text-gray-400">Tip: Airbnb truncates around ~32 characters—lead with your strongest concrete hook.</p>
     </div>
   );
 }
-
-function RefinableBlock({
-  title,
-  text,
-  onCopy,
-  onDownload,
-  refine,
-  options,
-}: {
-  title: string;
-  text: string;
-  onCopy: () => void;
-  onDownload: () => void;
-  refine: (tweak: string) => void;
-  options: string[];
+function RefinableBlock({ title, text, onCopy, onDownload, refine, options }:{
+  title: string; text: string; onCopy: ()=>void; onDownload: ()=>void; refine: (t:string)=>void; options: string[];
 }) {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h4 className="font-medium">{title}</h4>
         <div className="flex items-center gap-2">
-          <select
-            className="rounded-md border border-gray-700 bg-transparent px-2 py-1 text-xs"
-            onChange={(e) => e.target.value && refine(e.target.value)}
-            defaultValue=""
-          >
-            <option value="" className="bg-black">
-              Refine…
-            </option>
-            {options.map((o) => (
-              <option key={o} value={o} className="bg-black">
-                {o}
-              </option>
-            ))}
+          <select className="rounded-md border border-gray-700 bg-transparent px-2 py-1 text-xs"
+                  onChange={(e)=>e.target.value && refine(e.target.value)} defaultValue="">
+            <option value="" className="bg-black">Refine…</option>
+            {options.map((o)=> <option key={o} value={o} className="bg-black">{o}</option>)}
           </select>
-          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            Copy
-          </button>
-          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            Download
-          </button>
+          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Copy</button>
+          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Download</button>
         </div>
       </div>
       <article className="leading-7 text-gray-100">
@@ -854,223 +671,103 @@ function RefinableBlock({
     </div>
   );
 }
-
-function SectionsBlock({
-  sections,
-  onCopy,
-  onDownload,
-  onRegenerate,
-}: {
+function SectionsBlock({ sections, onCopy, onDownload, onRegenerate }:{
   sections: { space?: string; access?: string; notes?: string };
-  onCopy: () => void;
-  onDownload: () => void;
-  onRegenerate: () => void;
+  onCopy: ()=>void; onDownload: ()=>void; onRegenerate: ()=>void;
 }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <h4 className="font-medium">Airbnb sections</h4>
         <div className="flex items-center gap-2">
-          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            Regenerate
-          </button>
-          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            Copy
-          </button>
-          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            Download
-          </button>
+          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Regenerate</button>
+          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Copy</button>
+          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Download</button>
         </div>
       </div>
       <article className="space-y-3 leading-7 text-gray-100">
-        <div>
-          <h5 className="font-medium">The Space</h5>
-          <p>{sections.space || "—"}</p>
-        </div>
-        <div>
-          <h5 className="font-medium">Guest Access</h5>
-          <p>{sections.access || "—"}</p>
-        </div>
-        <div>
-          <h5 className="font-medium">Other Things to Note</h5>
-          <p>{sections.notes || "—"}</p>
-        </div>
+        <div><h5 className="font-medium">The Space</h5><p>{sections.space || "—"}</p></div>
+        <div><h5 className="font-medium">Guest Access</h5><p>{sections.access || "—"}</p></div>
+        <div><h5 className="font-medium">Other Things to Note</h5><p>{sections.notes || "—"}</p></div>
       </article>
     </div>
   );
 }
-
-function ListBlock({
-  title,
-  items,
-  onCopy,
-  onDownload,
-  onRegenerate,
-  tip,
-}: {
-  title: string;
-  items: string[];
-  onCopy: () => void;
-  onDownload: () => void;
-  onRegenerate: () => void;
-  tip?: string;
+function ListBlock({ title, items, onCopy, onDownload, onRegenerate, tip }:{
+  title: string; items: string[]; onCopy: ()=>void; onDownload: ()=>void; onRegenerate: ()=>void; tip?: string;
 }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <h4 className="font-medium">{title}</h4>
         <div className="flex items-center gap-2">
-          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            Regenerate
-          </button>
-          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            Copy
-          </button>
-          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
-            Download
-          </button>
+          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Regenerate</button>
+          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Copy</button>
+          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">Download</button>
         </div>
       </div>
       {items.length ? (
-        <ul className="list-disc pl-5 leading-7 text-gray-100">
-          {items.map((t, i) => (
-            <li key={i}>{t}</li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-sm text-gray-500">No items generated.</p>
-      )}
+        <ul className="list-disc pl-5 leading-7 text-gray-100">{items.map((t,i)=> <li key={i}>{t}</li>)}</ul>
+      ) : <p className="text-sm text-gray-500">No items generated.</p>}
       {tip && <p className="text-xs text-gray-400">{tip}</p>}
     </div>
   );
 }
-
-/** Simple “looks like Airbnb” preview */
-function PreviewPanel({ res }: { res: ResultPayload }) {
+function PreviewPanel({ res }:{ res: ResultPayload }) {
   return (
     <div className="rounded-lg border border-gray-700 p-4">
       <div className="mb-2">
-        <h2 className="text-xl font-semibold">
-          {res.titlePrimary || res.titles?.[0] || "Your title will appear here"}
-        </h2>
-        <p className="text-sm text-gray-400">
-          {res.meta?.word_count ? `${res.meta.word_count} words` : ""}{" "}
-        </p>
+        <h2 className="text-xl font-semibold">{res.titlePrimary || res.titles?.[0] || "Your title will appear here"}</h2>
+        <p className="text-sm text-gray-400">{res.meta?.word_count ? `${res.meta.word_count} words` : ""} </p>
       </div>
-
-      {res.summary && (
-        <div className="mb-4">
-          <h3 className="mb-1 font-medium">Summary</h3>
-          <p className="text-gray-100">{res.summary}</p>
-        </div>
-      )}
-
+      {res.summary && (<div className="mb-4"><h3 className="mb-1 font-medium">Summary</h3><p className="text-gray-100">{res.summary}</p></div>)}
       {res.description && (
         <div className="mb-4">
           <h3 className="mb-1 font-medium">Description</h3>
           <article className="leading-7 text-gray-100">
-            {res.description.split("\n\n").map((p, i) => (
-              <p key={i} className="mb-2">
-                {p}
-              </p>
-            ))}
+            {res.description.split("\n\n").map((p, i) => <p key={i} className="mb-2">{p}</p>)}
           </article>
         </div>
       )}
-
       {!!res.highlights?.length && (
         <div className="mb-4">
           <h3 className="mb-1 font-medium">Highlights</h3>
-          <ul className="list-disc pl-5 text-gray-100">
-            {res.highlights.map((h, i) => (
-              <li key={i}>{h}</li>
-            ))}
-          </ul>
+          <ul className="list-disc pl-5 text-gray-100">{res.highlights.map((h,i)=> <li key={i}>{h}</li>)}</ul>
         </div>
       )}
-
       {(res.sections?.space || res.sections?.access || res.sections?.notes) && (
         <div className="mb-4 grid gap-4 md:grid-cols-3">
-          {res.sections?.space && (
-            <div>
-              <h4 className="mb-1 font-medium">The Space</h4>
-              <p className="text-gray-100">{res.sections.space}</p>
-            </div>
-          )}
-          {res.sections?.access && (
-            <div>
-              <h4 className="mb-1 font-medium">Guest Access</h4>
-              <p className="text-gray-100">{res.sections.access}</p>
-            </div>
-          )}
-          {res.sections?.notes && (
-            <div>
-              <h4 className="mb-1 font-medium">Other Things to Note</h4>
-              <p className="text-gray-100">{res.sections.notes}</p>
-            </div>
-          )}
+          {res.sections?.space && (<div><h4 className="font-medium">The Space</h4><p className="text-gray-100">{res.sections.space}</p></div>)}
+          {res.sections?.access && (<div><h4 className="font-medium">Guest Access</h4><p className="text-gray-100">{res.sections.access}</p></div>)}
+          {res.sections?.notes && (<div><h4 className="font-medium">Other Things to Note</h4><p className="text-gray-100">{res.sections.notes}</p></div>)}
         </div>
       )}
-
       {!!res.amenities?.length && (
         <div className="mb-4">
           <h3 className="mb-1 font-medium">Amenities</h3>
           <div className="flex flex-wrap gap-2">
-            {res.amenities.map((a, i) => (
-              <span key={i} className="rounded-full border border-gray-700 px-2 py-1 text-xs text-gray-300">
-                {a}
-              </span>
-            ))}
+            {res.amenities.map((a,i)=> <span key={i} className="rounded-full border border-gray-700 px-2 py-1 text-xs text-gray-300">{a}</span>)}
           </div>
         </div>
       )}
-
-      {res.neighborhood && (
-        <div className="mb-4">
-          <h3 className="mb-1 font-medium">Neighborhood</h3>
-          <p className="text-gray-100">{res.neighborhood}</p>
-        </div>
-      )}
-
-      {res.rules && (
-        <div>
-          <h3 className="mb-1 font-medium">House Rules</h3>
-          <p className="text-gray-100">{res.rules}</p>
-        </div>
-      )}
+      {res.neighborhood && (<div className="mb-4"><h3 className="mb-1 font-medium">Neighborhood</h3><p className="text-gray-100">{res.neighborhood}</p></div>)}
+      {res.rules && (<div><h3 className="mb-1 font-medium">House Rules</h3><p className="text-gray-100">{res.rules}</p></div>)}
     </div>
   );
 }
-
-/** tiny helpers */
 function downloadText(text?: string, name = "text.txt") {
   if (!text) return;
   const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(url);
+  const a = document.createElement("a"); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url);
 }
 function downloadList(items?: string[], name = "list.txt") {
-  if (!items?.length) return;
-  downloadText(items.join("\n"), name);
+  if (!items?.length) return; downloadText(items.join("\n"), name);
 }
 function label(k: TabKey) {
   const map: Record<TabKey, string> = {
-    preview: "Preview",
-    title: "Title",
-    summary: "Summary",
-    description: "Description",
-    highlights: "Highlights",
-    sections: "Sections",
-    amenities: "Amenities",
-    neighborhood: "Neighborhood",
-    rules: "Rules",
-    photos: "Photo captions",
-    social: "Social",
-    seo: "SEO",
-  };
-  return map[k];
+    preview:"Preview", title:"Title", summary:"Summary", description:"Description", highlights:"Highlights",
+    sections:"Sections", amenities:"Amenities", neighborhood:"Neighborhood", rules:"Rules",
+    photos:"Photo captions", social:"Social", seo:"SEO",
+  }; return map[k];
 }
