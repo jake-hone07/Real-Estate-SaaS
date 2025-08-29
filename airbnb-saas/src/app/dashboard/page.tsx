@@ -1,10 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSession, useSessionContext } from '@supabase/auth-helpers-react';
 import { useRouter } from 'next/navigation';
-import { supabase as clientSupabase } from '@/lib/supabase';
+import { createBrowser } from '@/lib/supabase/browser';
 
 type CreditResp = { balance: number } | { error: string };
 
@@ -12,6 +12,9 @@ export default function DashboardPage() {
   const session = useSession();
   const { isLoading } = useSessionContext();
   const router = useRouter();
+
+  // ✅ client-side Supabase (browser helper)
+  const supabase = useMemo(() => createBrowser(), []);
 
   const [credits, setCredits] = useState<number | null>(null);
   const [loadingCredits, setLoadingCredits] = useState(true);
@@ -39,7 +42,7 @@ export default function DashboardPage() {
 
   const fetchListings = async () => {
     setLoadingListings(true);
-    const { data } = await clientSupabase
+    const { data } = await supabase
       .from('listings')
       .select('id, title, description, created_at')
       .order('created_at', { ascending: false })
@@ -53,7 +56,7 @@ export default function DashboardPage() {
       fetchCredits();
       fetchListings();
     }
-  }, [isLoading, session]);
+  }, [isLoading, session]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const onFocus = () => {
@@ -62,7 +65,7 @@ export default function DashboardPage() {
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading) {
     return (
@@ -91,17 +94,10 @@ export default function DashboardPage() {
               <span className="font-semibold">{credits}</span>
             )}
           </div>
-          {/* Use Link for bulletproof client navigation */}
-          <Link
-            href="/generate"
-            className="rounded-lg border px-3 py-2 text-sm bg-white shadow-sm hover:bg-gray-50"
-          >
+          <Link href="/generate" className="rounded-lg border px-3 py-2 text-sm bg-white shadow-sm hover:bg-gray-50">
             + Generate
           </Link>
-          <Link
-            href="/pricing"
-            className="rounded-lg border px-3 py-2 text-sm bg-white shadow-sm hover:bg-gray-50"
-          >
+          <Link href="/pricing" className="rounded-lg border px-3 py-2 text-sm bg-white shadow-sm hover:bg-gray-50">
             Pricing
           </Link>
         </div>
@@ -138,7 +134,7 @@ export default function DashboardPage() {
                   <button
                     className="text-sm text-red-600 hover:underline"
                     onClick={async () => {
-                      const { error } = await clientSupabase.from('listings').delete().eq('id', item.id);
+                      const { error } = await supabase.from('listings').delete().eq('id', item.id);
                       if (!error) setListings((prev) => prev.filter((x) => x.id !== item.id));
                     }}
                   >
