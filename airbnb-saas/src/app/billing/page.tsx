@@ -1,22 +1,23 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 
-/**
- * Billing page (client)
- * - Reads the signed-in user from Supabase
- * - Starts Stripe Checkout for one-time credits OR subscription
- * - Opens Stripe Customer Portal
- * - Handles HTML error responses gracefully (no JSON parse crash)
- */
+/** Page wrapper provides the Suspense boundary required by useSearchParams */
+export default function BillingPage() {
+  return (
+    <Suspense fallback={<BillingSkeleton />}>
+      <BillingInner />
+    </Suspense>
+  );
+}
 
 type BusyKey = null | "credits" | "subscription" | "portal";
 
-export default function BillingPage() {
+function BillingInner() {
   const router = useRouter();
-  const sp = useSearchParams();
+  const sp = useSearchParams(); // now safely inside Suspense
 
   const [email, setEmail] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -49,7 +50,7 @@ export default function BillingPage() {
       cache: "no-store",
     });
 
-    const raw = await r.text(); // try to parse JSON, else show the HTML snippet
+    const raw = await r.text();
     let json: any;
     try { json = JSON.parse(raw); } catch { json = { error: raw?.slice(0, 200) || "Unexpected response" }; }
 
@@ -66,7 +67,7 @@ export default function BillingPage() {
       setError(json?.error || "Could not start checkout. Please try again.");
       return;
     }
-    window.location.href = json.url as string; // Stripe Checkout
+    window.location.href = json.url as string;
   }
 
   async function openPortal() {
@@ -79,26 +80,12 @@ export default function BillingPage() {
       setError(json?.error || "Could not open customer portal.");
       return;
     }
-    window.location.href = json.url as string; // Stripe Customer Portal
+    window.location.href = json.url as string;
   }
 
   const disabled = useMemo(() => !email || !!busy, [email, busy]);
 
-  /** ---- UI ---- */
-  if (!authChecked) {
-    return (
-      <main className="mx-auto max-w-3xl p-6">
-        <div className="animate-pulse space-y-3">
-          <div className="h-7 w-48 rounded bg-gray-800/40" />
-          <div className="h-32 rounded bg-gray-800/40" />
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="h-44 rounded bg-gray-800/40" />
-            <div className="h-44 rounded bg-gray-800/40" />
-          </div>
-        </div>
-      </main>
-    );
-  }
+  if (!authChecked) return <BillingSkeleton />;
 
   return (
     <main className="mx-auto max-w-4xl space-y-6 p-6">
@@ -167,8 +154,23 @@ export default function BillingPage() {
   );
 }
 
-/* ---- Small UI bits ---- */
+/* ---- Loading skeleton used for Suspense fallback and auth-check ---- */
+function BillingSkeleton() {
+  return (
+    <main className="mx-auto max-w-3xl p-6">
+      <div className="animate-pulse space-y-3">
+        <div className="h-7 w-48 rounded bg-gray-800/40" />
+        <div className="h-32 rounded bg-gray-800/40" />
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="h-44 rounded bg-gray-800/40" />
+          <div className="h-44 rounded bg-gray-800/40" />
+        </div>
+      </div>
+    </main>
+  );
+}
 
+/* ---- Small UI bits ---- */
 function Alert({
   tone, title, children,
 }: { tone: "success" | "warn" | "error"; title: string; children: React.ReactNode }) {
