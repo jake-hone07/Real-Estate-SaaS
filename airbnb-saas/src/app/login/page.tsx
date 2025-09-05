@@ -1,128 +1,151 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 
 export default function LoginPage() {
-  const sp = useSearchParams();
+  return (
+    <Suspense fallback={<LoginSkeleton />}>
+      <LoginInner />
+    </Suspense>
+  );
+}
+
+function LoginInner() {
   const router = useRouter();
-  const redirectTo = sp.get("redirect") || "/my-listings";
+  const sp = useSearchParams(); // now safely inside Suspense
 
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(true);
 
-  // If already logged in, bounce away immediately
+  // Where to go after login
+  const redirectTo = useMemo(() => sp.get("redirect") || "/generate", [sp]);
+
+  // If already logged in, just go to redirect
   useEffect(() => {
-    let mounted = true;
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      if (mounted && user) router.replace(redirectTo);
+      if (user) {
+        router.replace(redirectTo);
+        return;
+      }
+      setChecking(false);
     })();
-
-    // Also listen for auth changes (covers OAuth + password)
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session?.user) router.replace(redirectTo);
-    });
-
-    return () => { mounted = false; sub.subscription.unsubscribe(); };
   }, [redirectTo, router]);
 
-  async function handleEmailAuth(e: React.FormEvent) {
+  async function sendMagicLink(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    setLoading(true);
-    try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
-      // onAuthStateChange will navigate; this is a fallback:
-      router.replace(redirectTo);
-    } catch (err: any) {
-      setError(err.message ?? "Auth error");
-    } finally {
-      setLoading(false);
-    }
-  }
 
-  async function handleSignUp(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
     try {
-      const { error } = await supabase.auth.signUp({ email, password });
+      const origin =
+        typeof window !== "undefined"
+          ? window.location.origin
+          : process.env.NEXT_PUBLIC_APP_URL;
+
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: `${origin}/auth/callback?redirect=${encodeURIComponent(
+            redirectTo
+          )}`,
+        },
+      });
       if (error) throw error;
-      router.replace(redirectTo);
+      setSent(true);
     } catch (err: any) {
-      setError(err.message ?? "Sign up error");
-    } finally {
-      setLoading(false);
+      setError(err?.message || "Failed to send link. Try again.");
     }
   }
 
   async function signInWithGoogle() {
     setError(null);
+    const origin =
+      typeof window !== "undefined"
+        ? window.location.origin
+        : process.env.NEXT_PUBLIC_APP_URL;
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
-      options: { redirectTo: window.location.origin + redirectTo },
+      options: {
+        redirectTo: `${origin}/auth/callback?redirect=${encodeURIComponent(
+          redirectTo
+        )}`,
+        queryParams: { prompt: "select_account" },
+      },
     });
     if (error) setError(error.message);
   }
 
+  if (checking) return <LoginSkeleton />;
+
   return (
-    <main className="mx-auto max-w-md p-6 space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold">Login</h1>
-        <p className="text-gray-400">Sign in to manage your listings.</p>
-      </header>
+    <main className="mx-auto max-w-md p-6">
+      <h1 className="text-2xl font-semibold tracking-tight">Log in</h1>
+      <p className="mt-1 text-sm text-gray-400">
+        We’ll email you a magic link. You can also continue with Google.
+      </p>
 
-      <button
-        onClick={signInWithGoogle}
-        className="w-full rounded-lg border px-3 py-2"
-      >
-        Continue with Google
-      </button>
+      {error && (
+        <div className="mt-4 rounded-lg border border-rose-700/40 bg-rose-900/20 p-3 text-sm text-rose-300">
+          {error}
+        </div>
+      )}
 
-      <div className="text-center text-sm text-gray-500">or</div>
+      {sent ? (
+        <div className="mt-6 rounded-lg border border-emerald-700/40 bg-emerald-900/20 p-4 text-emerald-300">
+          Check your inbox — we’ve sent a sign-in link to <b>{email}</b>.
+        </div>
+      ) : (
+        <form onSubmit={sendMagicLink} className="mt-6 space-y-3">
+          <label className="block text-sm text-gray-300">
+            Email
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="mt-1 w-full rounded-md border border-gray-700 bg-transparent px-3 py-2 outline-none focus:ring-2 focus:ring-gray-500"
+              placeholder="you@example.com"
+            />
+          </label>
 
-      <form className="space-y-3" onSubmit={handleEmailAuth}>
-        <input
-          className="w-full rounded-lg border bg-transparent p-2"
-          type="email"
-          placeholder="you@example.com"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
-        <input
-          className="w-full rounded-lg border bg-transparent p-2"
-          type="password"
-          placeholder="••••••••"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
-
-        {error && <div className="rounded bg-red-50 p-2 text-red-700">{error}</div>}
-
-        <div className="flex gap-2">
           <button
             type="submit"
-            disabled={loading}
-            className="w-1/2 rounded-lg bg-white px-3 py-2 text-black"
+            className="w-full rounded-md border border-gray-700 px-3 py-2 text-sm hover:bg-white/5"
           >
-            {loading ? "Working..." : "Sign in"}
+            Send magic link
           </button>
+
+          <div className="relative py-1 text-center text-xs text-gray-500">
+            <span className="bg-black px-2">or</span>
+          </div>
+
           <button
-            onClick={handleSignUp}
-            disabled={loading}
-            className="w-1/2 rounded-lg border px-3 py-2"
+            type="button"
+            onClick={signInWithGoogle}
+            className="w-full rounded-md border border-gray-700 px-3 py-2 text-sm hover:bg-white/5"
           >
-            Create account
+            Continue with Google
           </button>
-        </div>
-      </form>
+        </form>
+      )}
+    </main>
+  );
+}
+
+function LoginSkeleton() {
+  return (
+    <main className="mx-auto max-w-md p-6">
+      <div className="animate-pulse space-y-3">
+        <div className="h-7 w-40 rounded bg-gray-800/40" />
+        <div className="h-16 rounded bg-gray-800/40" />
+        <div className="h-10 rounded bg-gray-800/40" />
+        <div className="h-10 rounded bg-gray-800/40" />
+      </div>
     </main>
   );
 }
