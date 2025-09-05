@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase/client";
 import { qualityReport } from "@/lib/lint";
 
 /** ---------- Types ---------- */
@@ -82,6 +84,8 @@ const MIN_CHARS = 140;
 
 /** ---------- Component ---------- */
 export default function GenerateClient() {
+  const router = useRouter();
+
   /** Inputs */
   const [basics, setBasics] = useState("");
   const [highlightsIn, setHighlightsIn] = useState("");
@@ -98,6 +102,7 @@ export default function GenerateClient() {
   const [active, setActive] = useState<TabKey>("preview");
   const [copied, setCopied] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("Untitled listing");
+  const [saving, setSaving] = useState(false);
   const rightRef = useRef<HTMLDivElement>(null);
 
   /** Derived */
@@ -285,6 +290,75 @@ export default function GenerateClient() {
     flash("all");
   }
 
+  /** Save to Supabase (V1: full structured payload) */
+  function buildContentJSON() {
+    return {
+      // Normalize to what /my-listings full view expects
+      summary: res.summary ?? null,
+      theSpace: res.sections?.space ?? null,
+      guestAccess: res.sections?.access ?? null,
+      otherThings: res.sections?.notes ?? null,
+      amenities: res.amenities ?? [],
+      highlights: res.highlights ?? [],
+      neighborhood: res.neighborhood ?? null,
+      rulesText: res.rules ?? null,
+      sections: [
+        ...(res.sections?.space ? [{ title: "The Space", body: res.sections.space }] : []),
+        ...(res.sections?.access ? [{ title: "Guest Access", body: res.sections.access }] : []),
+        ...(res.sections?.notes ? [{ title: "Other Things to Note", body: res.sections.notes }] : []),
+      ],
+      photoCaptions: res.photoCaptions ?? [],
+      social: res.social ?? {},
+      seo: res.seo ?? [],
+      meta: res.meta ?? {},
+      // Keep original pieces too
+      raw: res,
+      projectName,
+      options: opt,
+      facts: fullFacts,
+    };
+  }
+
+  async function saveToMyListings() {
+    if (state !== "done") return;
+    setSaving(true);
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        router.push("/login?redirect=/generate");
+        return;
+      }
+
+      const title =
+        res.titlePrimary ||
+        res.titles?.[0] ||
+        projectName ||
+        "Untitled listing";
+
+      const longText =
+        [res.summary, res.description].filter(Boolean).join("\n\n") || null;
+
+      const payload = {
+        user_id: user.id,
+        title,
+        description: longText,
+        price: null as number | null, // (optional; you can wire a field later)
+        content: buildContentJSON(),
+      };
+
+      const { error } = await supabase.from("listings").insert([payload]);
+      if (error) throw error;
+
+      router.push("/my-listings");
+    } catch (e: any) {
+      alert(e?.message ?? "Failed to save listing");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   /** UI */
   return (
     <div className="grid gap-6 md:grid-cols-2">
@@ -317,7 +391,13 @@ export default function GenerateClient() {
           </div>
           <div className="mt-3 h-2 w-full overflow-hidden rounded bg-gray-800/50">
             <div
-              className={`h-full ${quality.score > 80 ? "bg-emerald-500" : quality.score > 60 ? "bg-amber-400" : "bg-rose-500"}`}
+              className={`h-full ${
+                quality.score > 80
+                  ? "bg-emerald-500"
+                  : quality.score > 60
+                  ? "bg-amber-400"
+                  : "bg-rose-500"
+              }`}
               style={{ width: `${quality.score}%` }}
             />
           </div>
@@ -330,7 +410,12 @@ export default function GenerateClient() {
           )}
         </div>
 
-        {field("Basics", basics, setBasics, "Beds/baths, sleeps, property type, standout amenities, parking, Wi-Fi…")}
+        {field(
+          "Basics",
+          basics,
+          setBasics,
+          "Beds/baths, sleeps, property type, standout amenities, parking, Wi-Fi…"
+        )}
         {field(
           "Highlights",
           highlightsIn,
@@ -343,29 +428,45 @@ export default function GenerateClient() {
           setLocationIn,
           "Walking times (cafés, groceries, transit), nearby attractions, neighborhood vibe…"
         )}
-        {field("House rules", rulesIn, setRulesIn, "Quiet hours, parties, pets, smoking…")}
+        {field(
+          "House rules",
+          rulesIn,
+          setRulesIn,
+          "Quiet hours, parties, pets, smoking…"
+        )}
 
         {/* Options */}
         <div className="rounded-lg border border-gray-700 p-4 space-y-4">
           <h3 className="font-medium">Options</h3>
           <div className="grid gap-4 md:grid-cols-2">
-            <Select label="Tone" value={opt.tone} onChange={(v) => setOptField("tone", v)} items={[
-              "Warm & professional",
-              "Friendly & upbeat",
-              "Calm & minimalist",
-              "Luxury, refined",
-              "Family-friendly",
-            ]}/>
-            <Select label="Audience" value={opt.audience} onChange={(v) => setOptField("audience", v)} items={[
-              "Families & small groups",
-              "Couples & business travelers",
-              "Remote workers",
-              "Adventure travelers",
-              "Long-term stays",
-            ]}/>
+            <Select
+              label="Tone"
+              value={opt.tone}
+              onChange={(v) => setOptField("tone", v)}
+              items={[
+                "Warm & professional",
+                "Friendly & upbeat",
+                "Calm & minimalist",
+                "Luxury, refined",
+                "Family-friendly",
+              ]}
+            />
+            <Select
+              label="Audience"
+              value={opt.audience}
+              onChange={(v) => setOptField("audience", v)}
+              items={[
+                "Families & small groups",
+                "Couples & business travelers",
+                "Remote workers",
+                "Adventure travelers",
+                "Long-term stays",
+              ]}
+            />
             <div>
               <label className="mb-1 block text-sm text-gray-300">
-                Word budget: <span className="text-gray-400">{opt.wordBudget} words</span>
+                Word budget:{" "}
+                <span className="text-gray-400">{opt.wordBudget} words</span>
               </label>
               <input
                 type="range"
@@ -373,34 +474,93 @@ export default function GenerateClient() {
                 max={260}
                 step={10}
                 value={opt.wordBudget}
-                onChange={(e) => setOptField("wordBudget", parseInt(e.target.value))}
+                onChange={(e) =>
+                  setOptField("wordBudget", parseInt(e.target.value))
+                }
                 className="w-full"
               />
             </div>
-            <Select label="Language" value={opt.language} onChange={(v)=>setOptField("language", v)} items={[
-              "English","Spanish","French","German","Portuguese","Italian","Japanese","Chinese"
-            ]}/>
-            <Select label="Platform style" value={opt.platform} onChange={(v)=>setOptField("platform", v as any)} items={[
-              "Airbnb","VRBO","Booking"
-            ]}/>
-            <Select label="Season" value={opt.season || "Default"} onChange={(v)=>setOptField("season", v as any)} items={[
-              "Default","Spring","Summer","Fall","Winter"
-            ]}/>
-            <Select label="Units" value={opt.unit} onChange={(v)=>setOptField("unit", v as any)} items={[
-              "imperial","metric"
-            ]}/>
+            <Select
+              label="Language"
+              value={opt.language}
+              onChange={(v) => setOptField("language", v)}
+              items={[
+                "English",
+                "Spanish",
+                "French",
+                "German",
+                "Portuguese",
+                "Italian",
+                "Japanese",
+                "Chinese",
+              ]}
+            />
+            <Select
+              label="Platform style"
+              value={opt.platform}
+              onChange={(v) => setOptField("platform", v as any)}
+              items={["Airbnb", "VRBO", "Booking"]}
+            />
+            <Select
+              label="Season"
+              value={opt.season || "Default"}
+              onChange={(v) => setOptField("season", v as any)}
+              items={["Default", "Spring", "Summer", "Fall", "Winter"]}
+            />
+            <Select
+              label="Units"
+              value={opt.unit}
+              onChange={(v) => setOptField("unit", v as any)}
+              items={["imperial", "metric"]}
+            />
           </div>
 
           <div className="flex flex-wrap items-center gap-4 text-sm">
-            <Toggle label="Title" value={opt.includeTitle} onChange={(v)=>setOptField("includeTitle", v)} />
-            <Toggle label="Highlights" value={opt.includeHighlights} onChange={(v)=>setOptField("includeHighlights", v)} />
-            <Toggle label="Social" value={opt.includeCaption} onChange={(v)=>setOptField("includeCaption", v)} />
-            <Toggle label="SEO" value={opt.includeSEO} onChange={(v)=>setOptField("includeSEO", v)} />
-            <Toggle label="Sections" value={opt.includeSections} onChange={(v)=>setOptField("includeSections", v)} />
-            <Toggle label="Amenities" value={opt.includeAmenities} onChange={(v)=>setOptField("includeAmenities", v)} />
-            <Toggle label="Neighborhood" value={opt.includeNeighborhood} onChange={(v)=>setOptField("includeNeighborhood", v)} />
-            <Toggle label="Rules" value={opt.includeRules} onChange={(v)=>setOptField("includeRules", v)} />
-            <Toggle label="Photo captions" value={opt.includePhotos} onChange={(v)=>setOptField("includePhotos", v)} />
+            <Toggle
+              label="Title"
+              value={opt.includeTitle}
+              onChange={(v) => setOptField("includeTitle", v)}
+            />
+            <Toggle
+              label="Highlights"
+              value={opt.includeHighlights}
+              onChange={(v) => setOptField("includeHighlights", v)}
+            />
+            <Toggle
+              label="Social"
+              value={opt.includeCaption}
+              onChange={(v) => setOptField("includeCaption", v)}
+            />
+            <Toggle
+              label="SEO"
+              value={opt.includeSEO}
+              onChange={(v) => setOptField("includeSEO", v)}
+            />
+            <Toggle
+              label="Sections"
+              value={opt.includeSections}
+              onChange={(v) => setOptField("includeSections", v)}
+            />
+            <Toggle
+              label="Amenities"
+              value={opt.includeAmenities}
+              onChange={(v) => setOptField("includeAmenities", v)}
+            />
+            <Toggle
+              label="Neighborhood"
+              value={opt.includeNeighborhood}
+              onChange={(v) => setOptField("includeNeighborhood", v)}
+            />
+            <Toggle
+              label="Rules"
+              value={opt.includeRules}
+              onChange={(v) => setOptField("includeRules", v)}
+            />
+            <Toggle
+              label="Photo captions"
+              value={opt.includePhotos}
+              onChange={(v) => setOptField("includePhotos", v)}
+            />
           </div>
         </div>
 
@@ -418,8 +578,11 @@ export default function GenerateClient() {
       </section>
 
       {/* RIGHT: RESULTS */}
-      <section ref={rightRef} className="rounded-lg border border-gray-700 p-4 md:sticky md:top-6 h-fit">
-        {/* Tabs */}
+      <section
+        ref={rightRef}
+        className="rounded-lg border border-gray-700 p-4 md:sticky md:top-6 h-fit"
+      >
+        {/* Tabs + Actions */}
         <div className="mb-3 flex flex-wrap items-center gap-2">
           {(
             [
@@ -441,7 +604,9 @@ export default function GenerateClient() {
               key={k}
               onClick={() => setActive(k)}
               className={`rounded-md px-3 py-1.5 text-sm ${
-                active === k ? "border border-gray-500 bg-white/5" : "text-gray-300 hover:bg-white/5"
+                active === k
+                  ? "border border-gray-500 bg-white/5"
+                  : "text-gray-300 hover:bg-white/5"
               }`}
             >
               {label(k)}
@@ -449,6 +614,15 @@ export default function GenerateClient() {
           ))}
 
           <div className="ml-auto flex items-center gap-2">
+            {state === "done" && (
+              <button
+                onClick={saveToMyListings}
+                disabled={saving}
+                className="rounded-md bg-white px-2 py-1 text-xs text-black disabled:opacity-60"
+              >
+                {saving ? "Saving…" : "Save to My Listings"}
+              </button>
+            )}
             <button
               onClick={copyAllForAirbnb}
               className="rounded-md border border-gray-600 px-2 py-1 text-xs"
@@ -482,7 +656,9 @@ export default function GenerateClient() {
 
         {/* States */}
         {state === "idle" && (
-          <p className="text-sm text-gray-500">Your results will appear here after you generate.</p>
+          <p className="text-sm text-gray-500">
+            Your results will appear here after you generate.
+          </p>
         )}
         {state === "loading" && (
           <div className="animate-pulse space-y-2">
@@ -507,12 +683,14 @@ export default function GenerateClient() {
                 onCopyPrimary={() => {
                   copyText(res.titlePrimary || "");
                   flash("title1");
-                } }
+                }}
                 onCopyAll={() => {
                   copyList(res.titles || [], "");
                   flash("titleall");
-                } }
-                onRegenerate={() => regeneratePart("titles")} platform={"Airbnb"}              />
+                }}
+                onRegenerate={() => regeneratePart("titles")}
+                platform={"Airbnb"}
+              />
             )}
 
             {active === "summary" && (
@@ -673,9 +851,7 @@ export default function GenerateClient() {
                   copyText((res.seo || []).join(", "));
                   flash("seo");
                 }}
-                onDownload={() =>
-                  downloadText((res.seo || []).join(", "), "seo-tags.txt")
-                }
+                onDownload={() => downloadText((res.seo || []).join(", "), "seo-tags.txt")}
                 onRegenerate={() => regeneratePart("seo")}
                 tip="Mix neighborhood + property-type + standout amenities."
               />
@@ -717,10 +893,22 @@ function Select({
   );
 }
 
-function Toggle({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) {
+function Toggle({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
     <label className="flex items-center gap-2">
-      <input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />
+      <input
+        type="checkbox"
+        checked={value}
+        onChange={(e) => onChange(e.target.checked)}
+      />
       {label}
     </label>
   );
@@ -734,6 +922,7 @@ function Card({ label, body }: { label: string; body?: string }) {
     </div>
   );
 }
+
 /** Titles block for primary + A/B/C titles */
 function TitlesBlock({
   primary,
@@ -757,10 +946,16 @@ function TitlesBlock({
       <div className="flex items-center justify-between">
         <h4 className="font-medium">Title (Primary + A/B/C)</h4>
         <div className="flex items-center gap-2">
-          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+          <button
+            onClick={onRegenerate}
+            className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+          >
             Regenerate
           </button>
-          <button onClick={onCopyAll} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+          <button
+            onClick={onCopyAll}
+            className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+          >
             Copy All
           </button>
         </div>
@@ -770,13 +965,22 @@ function TitlesBlock({
       <div className="rounded-md border border-gray-700 p-2">
         <div className="mb-1 flex items-center justify-between text-xs text-gray-400">
           <span>Primary</span>
-          <span>{primary.length}/{limit}</span>
+          <span>
+            {primary.length}/{limit}
+          </span>
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className={`font-medium ${primary.length > limit ? "text-amber-400" : ""}`}>
+          <span
+            className={`font-medium ${
+              primary.length > limit ? "text-amber-400" : ""
+            }`}
+          >
             {primary || "—"}
           </span>
-          <button onClick={onCopyPrimary} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+          <button
+            onClick={onCopyPrimary}
+            className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+          >
             Copy
           </button>
         </div>
@@ -789,9 +993,17 @@ function TitlesBlock({
             <div key={i} className="rounded-md border border-gray-700 p-2">
               <div className="mb-1 flex items-center justify-between text-xs text-gray-400">
                 <span>Alt {String.fromCharCode(65 + i)}</span>
-                <span>{t.length}/{limit}</span>
+                <span>
+                  {t.length}/{limit}
+                </span>
               </div>
-              <span className={`font-medium ${t.length > limit ? "text-amber-400" : ""}`}>{t}</span>
+              <span
+                className={`font-medium ${
+                  t.length > limit ? "text-amber-400" : ""
+                }`}
+              >
+                {t}
+              </span>
             </div>
           ))
         ) : (
@@ -800,7 +1012,8 @@ function TitlesBlock({
       </div>
 
       <p className="text-xs text-gray-400">
-        Tip: Airbnb truncates around ~32 characters—lead with your strongest concrete hook.
+        Tip: Airbnb truncates around ~32 characters—lead with your strongest
+        concrete hook.
       </p>
     </div>
   );
@@ -840,16 +1053,30 @@ function RefinableBlock({
               </option>
             ))}
           </select>
-          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+          <button
+            onClick={onCopy}
+            className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+          >
             Copy
           </button>
-          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+          <button
+            onClick={onDownload}
+            className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+          >
             Download
           </button>
         </div>
       </div>
       <article className="leading-7 text-gray-100">
-        {text ? text.split("\n\n").map((p, i) => <p key={i} className="mb-2">{p}</p>) : <p className="text-sm text-gray-500">No content generated.</p>}
+        {text ? (
+          text.split("\n\n").map((p, i) => (
+            <p key={i} className="mb-2">
+              {p}
+            </p>
+          ))
+        ) : (
+          <p className="text-sm text-gray-500">No content generated.</p>
+        )}
       </article>
     </div>
   );
@@ -871,13 +1098,22 @@ function SectionsBlock({
       <div className="flex items-center justify-between">
         <h4 className="font-medium">Airbnb sections</h4>
         <div className="flex items-center gap-2">
-          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+          <button
+            onClick={onRegenerate}
+            className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+          >
             Regenerate
           </button>
-          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+          <button
+            onClick={onCopy}
+            className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+          >
             Copy
           </button>
-          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+          <button
+            onClick={onDownload}
+            className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+          >
             Download
           </button>
         </div>
@@ -920,13 +1156,22 @@ function ListBlock({
       <div className="flex items-center justify-between">
         <h4 className="font-medium">{title}</h4>
         <div className="flex items-center gap-2">
-          <button onClick={onRegenerate} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+          <button
+            onClick={onRegenerate}
+            className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+          >
             Regenerate
           </button>
-          <button onClick={onCopy} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+          <button
+            onClick={onCopy}
+            className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+          >
             Copy
           </button>
-          <button onClick={onDownload} className="rounded-md border border-gray-600 px-2 py-1 text-xs">
+          <button
+            onClick={onDownload}
+            className="rounded-md border border-gray-600 px-2 py-1 text-xs"
+          >
             Download
           </button>
         </div>
@@ -1017,7 +1262,10 @@ function PreviewPanel({ res }: { res: ResultPayload }) {
           <h3 className="mb-1 font-medium">Amenities</h3>
           <div className="flex flex-wrap gap-2">
             {res.amenities.map((a, i) => (
-              <span key={i} className="rounded-full border border-gray-700 px-2 py-1 text-xs text-gray-300">
+              <span
+                key={i}
+                className="rounded-full border border-gray-700 px-2 py-1 text-xs text-gray-300"
+              >
                 {a}
               </span>
             ))}

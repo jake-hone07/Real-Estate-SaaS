@@ -1,26 +1,19 @@
-// src/app/layout.tsx
-import './globals.css';
-import { Suspense } from 'react';
-import AppHeader from '@/components/AppHeader';
-import Providers from './providers';
+import "./globals.css";
+import type { Metadata } from "next";
+import NavBar from "@/components/NavBar";
 
-export const metadata = {
-  title: 'ListingForge',
-  description: 'Turn property facts into market-ready listings.',
+export const metadata: Metadata = {
+  title: { default: "ListingForge", template: "%s · ListingForge" },
+  description: "Generate and manage booking-ready property listings.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body className="bg-bg text-text antialiased">
-        <Providers>
-          <Suspense fallback={null}>
-            <AppHeader />
-          </Suspense>
-          <div className="min-h-[calc(100vh-64px)]">{children}</div>
-        </Providers>
+    <html lang="en" className="h-full bg-black text-gray-100">
+      <body className="min-h-full">
+        <NavBar />
+        <div className="mx-auto max-w-6xl p-4 lg:p-6">{children}</div>
       </body>
     </html>
   );
 }
-
