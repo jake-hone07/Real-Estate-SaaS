@@ -1,24 +1,40 @@
-// src/app/api/stripe/portal/route.ts
-import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import Stripe from 'stripe';
+import { NextRequest, NextResponse } from "next/server";
+import { stripe, APP_URL } from "@/lib/stripe/server";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!)
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-export async function POST() {
-  const supabase = createRouteHandlerClient({ cookies });
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+export async function POST(req: NextRequest) {
+  try {
+    const { email } = (await req.json()) as { email?: string };
+    if (!email) return NextResponse.json({ error: "Missing email" }, { status: 400 });
 
-  const { data: profile, error } = await supabase.from('profiles').select('stripe_customer_id').eq('id', user.id).single();
-  if (error || !profile?.stripe_customer_id) return NextResponse.json({ error: 'No Stripe customer' }, { status: 400 });
+    const customers = await stripe.customers.search({
+      query: `email:'${email.replace(/'/g, "\\'")}'`,
+      limit: 1,
+    });
 
-  const portal = await stripe.billingPortal.sessions.create({
-    customer: profile.stripe_customer_id,
-    return_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`,
-  });
+    const customer = customers.data[0];
+    if (!customer) {
+      return NextResponse.json(
+        { error: "No Stripe customer found for this email." },
+        { status: 404 }
+      );
+    }
 
-  return NextResponse.json({ url: portal.url });
+    const portal = await stripe.billingPortal.sessions.create({
+      customer: customer.id,
+      return_url: `${APP_URL}/billing`,
+    });
+
+    if (!portal.url) {
+      return NextResponse.json({ error: "No portal URL from Stripe" }, { status: 500 });
+    }
+    return NextResponse.json({ url: portal.url });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: String(err?.message || err || "Server error") },
+      { status: 500 }
+    );
+  }
 }
-
