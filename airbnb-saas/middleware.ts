@@ -1,39 +1,46 @@
-import { NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
+// /middleware.ts
+import { NextResponse, type NextRequest } from 'next/server';
 
-export async function middleware(req: Request) {
-  const res = NextResponse.next();
+export function middleware(req: NextRequest) {
+  const { pathname, search } = req.nextUrl;
 
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get: (name: string) =>
-          req.headers.get("cookie")?.match(new RegExp(`${name}=([^;]*)`))?.[1],
-        set: () => {},
-        remove: () => {},
-      },
-    }
+  // Protect only these routes (add more if needed)
+  const protectedPaths = new Set<string>([
+    '/billing',
+    '/my-listings',
+    // '/generate', // ← uncomment if you want this protected too
+    // '/app', '/app/billing', '/app/my-listings', // ← only if you use /app/* pages
+  ]);
+
+  const isProtected = [...protectedPaths].some(
+    (p) => pathname === p || pathname.startsWith(p + '/')
   );
+  if (!isProtected) return NextResponse.next();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Allow through if Supabase cookies exist OR our auth-ok cookie was set
+  const hasSupabaseCookie =
+    req.cookies.has('sb-access-token') ||
+    req.cookies.has('sb-refresh-token') ||
+    req.cookies.getAll().some((c) => c.name.startsWith('sb-') && c.name.endsWith('-auth-token'));
 
-  const url = new URL(req.url);
-  const protectedPaths = ["/my-listings"];
-  const isProtected = protectedPaths.some((p) => url.pathname.startsWith(p));
+  const hasOurCookie = req.cookies.get('auth-ok')?.value === '1';
 
-  if (isProtected && !user) {
-    const redirectTo = new URL("/login", req.url);
-    redirectTo.searchParams.set("redirect", url.pathname);
-    return NextResponse.redirect(redirectTo);
-  }
+  if (hasSupabaseCookie || hasOurCookie) return NextResponse.next();
 
-  return res;
+  // Otherwise, redirect to login with return path
+  const url = req.nextUrl.clone();
+  url.pathname = '/login';
+  url.searchParams.set('redirect', pathname + (search || ''));
+  return NextResponse.redirect(url);
 }
 
 export const config = {
-  matcher: ["/my-listings/:path*"],
+  matcher: [
+    '/billing',
+    '/billing/:path*',
+    '/my-listings',
+    '/my-listings/:path*',
+    // '/generate', '/generate/:path*', // ← if protected
+    // '/app/:path*',                  // ← only if you actually use /app/* pages
+  ],
 };

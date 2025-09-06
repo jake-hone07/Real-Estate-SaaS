@@ -67,7 +67,7 @@ function buildGeneratorAutosaveFromListing(l: Listing) {
 export default function MyListingsPage() {
   const router = useRouter();
 
-  // Session gate
+  // Session (no redirect here; middleware guards this route)
   const [sessionChecked, setSessionChecked] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
 
@@ -83,18 +83,14 @@ export default function MyListingsPage() {
   // “View full” modal state
   const [viewItem, setViewItem] = useState<Listing | null>(null);
 
-  /** ---------- Auth Gate ---------- */
+  /** ---------- Session ---------- */
   useEffect(() => {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        router.replace("/login?redirect=/my-listings");
-        return;
-      }
-      setUserId(user.id);
+      setUserId(user?.id ?? null);
       setSessionChecked(true);
     })();
-  }, [router]);
+  }, []);
 
   /** ---------- Load Listings ---------- */
   useEffect(() => {
@@ -103,6 +99,7 @@ export default function MyListingsPage() {
       await loadListings();
       setLoading(false);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionChecked]);
 
   async function loadListings() {
@@ -161,7 +158,7 @@ export default function MyListingsPage() {
           title: form.title.trim(),
           description: form.description ? form.description.trim() : null,
           price: form.price ? Number(form.price) : null,
-          content: null, // manual-create path; generator saves structured JSON
+          content: null,
         },
       ]);
       if (error) return setError(error.message);
@@ -189,7 +186,7 @@ export default function MyListingsPage() {
       const autosave = buildGeneratorAutosaveFromListing(l);
       localStorage.setItem("lg_project_v2", JSON.stringify(autosave));
     } catch {
-      // if localStorage fails, we still navigate; GenerateClient will load defaults
+      // ignore
     }
     router.push("/generate");
   }
@@ -392,7 +389,6 @@ export default function MyListingsPage() {
                   className="rounded-lg border border-gray-700 px-3 py-1.5 text-sm"
                   onClick={() => {
                     editInGenerator(viewItem);
-                    // keep modal open/closed as you like; we navigate away anyway
                   }}
                 >
                   Edit in Generator

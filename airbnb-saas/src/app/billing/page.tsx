@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 
 /** Page wrapper provides the Suspense boundary required by useSearchParams */
@@ -16,7 +16,6 @@ export default function BillingPage() {
 type BusyKey = null | "credits" | "subscription" | "portal";
 
 function BillingInner() {
-  const router = useRouter();
   const sp = useSearchParams(); // now safely inside Suspense
 
   const [email, setEmail] = useState<string | null>(null);
@@ -25,43 +24,39 @@ function BillingInner() {
   const [busy, setBusy] = useState<BusyKey>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const success = sp.get("success") === "1";
-  const canceled = sp.get("canceled") === "1";
+  const success  = sp?.get("success")  === "1";
+const canceled = sp?.get("canceled") === "1";
 
-  /** ---- Auth gate (client) ---- */
+
+  /** ---- Session presence (no redirect here; middleware guards this page) ---- */
   useEffect(() => {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        router.replace("/login?redirect=/billing");
-        return;
-      }
-      setEmail(user.email ?? null);
+      setEmail(user?.email ?? null);
       setAuthChecked(true);
     })();
-  }, [router]);
+  }, []);
 
-  /** ---- Safe JSON POST (falls back if HTML error appears) ---- */
-  async function postJSONSafe(url: string, body: any) {
+  /** ---- Safe JSON POST (defensive against HTML error pages) ---- */
+  async function postJSONSafe(url: string, body?: any) {
     const r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: body ? JSON.stringify(body) : undefined,
       cache: "no-store",
     });
 
-    const raw = await r.text();
+    const text = await r.text();
     let json: any;
-    try { json = JSON.parse(raw); } catch { json = { error: raw?.slice(0, 200) || "Unexpected response" }; }
-
+    try { json = JSON.parse(text); } catch { json = { error: text?.slice(0, 200) || "Unexpected response" }; }
     return { ok: r.ok, json };
   }
 
-  async function startCheckout(mode: "credits" | "subscription") {
-    if (!email) return;
-    setBusy(mode);
+  /** ---- Stripe actions (match our working API contracts) ---- */
+  async function startCheckout(kind: "coins" | "starter") {
+    setBusy(kind === "coins" ? "credits" : "subscription");
     setError(null);
-    const { ok, json } = await postJSONSafe("/api/stripe/checkout", { email, mode });
+    const { ok, json } = await postJSONSafe("/api/stripe/checkout", { kind });
     if (!ok || !json?.url) {
       setBusy(null);
       setError(json?.error || "Could not start checkout. Please try again.");
@@ -71,10 +66,9 @@ function BillingInner() {
   }
 
   async function openPortal() {
-    if (!email) return;
     setBusy("portal");
     setError(null);
-    const { ok, json } = await postJSONSafe("/api/stripe/portal", { email });
+    const { ok, json } = await postJSONSafe("/api/stripe/portal");
     if (!ok || !json?.url) {
       setBusy(null);
       setError(json?.error || "Could not open customer portal.");
@@ -83,7 +77,7 @@ function BillingInner() {
     window.location.href = json.url as string;
   }
 
-  const disabled = useMemo(() => !email || !!busy, [email, busy]);
+  const disabled = useMemo(() => !!busy, [busy]);
 
   if (!authChecked) return <BillingSkeleton />;
 
@@ -111,7 +105,7 @@ function BillingInner() {
           title="Credits pack"
           description="One-time purchase. Great when you only need a handful of generations."
           primaryCtaLabel={busy === "credits" ? "Redirecting…" : "Buy credits"}
-          onPrimaryCta={() => startCheckout("credits")}
+          onPrimaryCta={() => startCheckout("coins")}
           disabled={disabled}
           badge="One-time"
           bullets={["Pay once, use anytime", "No renewal or commitment", "Good for occasional users"]}
@@ -120,7 +114,7 @@ function BillingInner() {
           title="Subscription"
           description="Monthly plan with generous limits and priority generation."
           primaryCtaLabel={busy === "subscription" ? "Redirecting…" : "Start subscription"}
-          onPrimaryCta={() => startCheckout("subscription")}
+          onPrimaryCta={() => startCheckout("starter")}
           disabled={disabled}
           badge="Monthly"
           bullets={["Predictable monthly cost", "Cancel anytime in the portal", "Best for frequent users"]}
