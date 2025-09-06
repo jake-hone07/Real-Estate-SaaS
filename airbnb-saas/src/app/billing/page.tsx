@@ -3,6 +3,8 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 /** Page wrapper provides the Suspense boundary required by useSearchParams */
 export default function BillingPage() {

@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 /**
  * Types that match the `public.listings` table.
